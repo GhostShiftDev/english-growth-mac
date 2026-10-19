@@ -1,0 +1,930 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>English Growth</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <header>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <div style="width:34px;height:34px;background:white;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:800;color:var(--brand);font-size:1.1rem;">EG</div>
+      <div>
+        <div style="font-weight:700;font-size:1.15rem;">English Growth</div>
+        <div style="opacity:0.9;font-size:0.85rem;">English learning for teachers &bull; Works fully offline</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;">
+      <button class="btn ghost small" id="btnSignOut" style="display:none;">Sign out</button>
+    </div>
+  </header>
+  <main id="mainContainer"></main>
+</div>
+
+<script type="module">
+import { CONTENT, getQuestions } from './content.js';
+
+const api = window.api;
+const container = document.getElementById('mainContainer');
+
+let state = {
+  groups: [],
+  currentGroup: null,
+  currentLevel: 'beginner',
+  currentUnit: 1,
+  supportLang: 'es',
+};
+
+// ---------- Utils ----------
+function html(strings, ...values) {
+  return strings.reduce((acc, s, i) => acc + s + (values[i] ?? ''), '');
+}
+
+function render(viewFn, ...args) {
+  container.innerHTML = '';
+  const el = document.createElement('div');
+  el.className = 'view active';
+  el.innerHTML = viewFn(...args);
+  container.appendChild(el);
+  setupGlobalListeners(el);
+  return el;
+}
+
+function navigate(viewFn, ...args) {
+  render(viewFn, ...args);
+}
+
+function $(sel, root = container) { return root.querySelector(sel); }
+function $$(sel, root = container) { return Array.from(root.querySelectorAll(sel)); }
+
+function on(el, ev, sel, handler) {
+  el.addEventListener(ev, (e) => {
+    const target = e.target.closest(sel);
+    if (target) handler.call(target, e, target.dataset);
+  });
+}
+
+async function loadState() {
+  state.groups = await api.storeGet('groups') || [];
+  state.supportLang = await api.storeGet('support_lang') || 'es';
+  return state;
+}
+
+async function saveGroups() {
+  await api.storeSet('groups', state.groups);
+}
+
+function groupKey(g, suffix) { return `${suffix}:${g.name}`; }
+function studentsKey(g) { return `students:${g.name}`; }
+function doneKey(g) { return `done:${g.name}`; }
+function resumeKey(g) { return `resume:${g.name}`; }
+function levelKey(g) { return `level:${g.name}`; }
+function attKey(g, date) { return `att:${g.name}:${date}`; }
+function scoreKey(g, u) { return `score:${g.name}:${u}`; }
+function scoreStKey(g, u, s) { return `score_st:${g.name}:${u}:${s}`; }
+
+async function getGroupData(g) {
+  const [students, done, resume, level] = await Promise.all([
+    api.storeGet(studentsKey(g)) || [],
+    api.storeGet(doneKey(g)) || [],
+    api.storeGet(resumeKey(g)) || 1,
+    api.storeGet(levelKey(g)) || 'beginner',
+  ]);
+  return { students, done, resume, level };
+}
+
+// ---------- Global listeners ----------
+function setupGlobalListeners(el) {
+  on(el, 'click', '[data-view]', (e, d) => {
+    const v = d.view;
+    if (v === 'login') navigate(loginView);
+    else if (v === 'grouplist') navigate(groupListView);
+    else if (v === 'group') navigate(groupView, d.group);
+    else if (v === 'attendance') navigate(attendanceView, d.group);
+    else if (v === 'students') navigate(studentListView, d.group);
+    else if (v === 'unitselect') navigate(unitSelectView, d.group, d.level || 'beginner');
+    else if (v === 'lesson') navigate(lessonView, d.group, d.level, +d.unit);
+    else if (v === 'unittest') navigate(unitTestView, d.group, d.level, +d.unit);
+    else if (v === 'progress') navigate(progressView, d.group);
+    else if (v === 'homework') navigate(homeworkView, d.group);
+    else if (v === 'fundamentals') navigate(fundamentalsView);
+    else if (v === 'scores') navigate(scoresView, d.group, d.level, +d.unit);
+    else if (v === 'export') navigate(exportView, d.group);
+    else if (v === 'print') navigate(printView, d.group, d.level, +d.unit, d.mode || 'exam');
+  });
+
+  on(el, 'click', '[data-action]', async (e, d) => {
+    switch (d.action) {
+      case 'login': await doLogin(el); break;
+      case 'creategroup': await doCreateGroup(el); break;
+      case 'editgroup': await doEditGroup(d); break;
+      case 'deletegroup': await doDeleteGroup(d); break;
+      case 'setlang': await doSetLang(d); break;
+      case 'signout': await doSignOut(); break;
+      case 'saveattendance': await doSaveAttendance(el, d.group); break;
+      case 'attall': await doAttAll(d.group); break;
+      case 'attclear': await doAttClear(d.group); break;
+      case 'addstudent': await doAddStudent(el, d.group); break;
+      case 'deletestudent': await doDeleteStudent(el, d.group, d.index); break;
+      case 'renamestudent': await doRenameStudent(el, d.group, d.index); break;
+      case 'savemarks': await doSaveMarks(el, d.group, d.level, d.unit); break;
+      case 'exportxlsx': await doExportXLSX(d.group); break;
+      case 'backup': await doBackup(); break;
+      case 'restore': await doRestore(); break;
+      case 'printpdf': await doPrintPDF(d.group, d.level, d.unit, d.mode); break;
+      case 'generatehw': await doGenerateHW(d.group, d.unit); break;
+    }
+  });
+
+  on(el, 'change', '[data-student]', (e) => {
+    // checkboxes de asistencia se leen al guardar
+  });
+}
+
+// ---------- Login ----------
+function loginView() {
+  return html`
+    <div class="card center" style="max-width:400px;margin:60px auto;">
+      <div style="width:72px;height:72px;background:white;border-radius:16px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-weight:800;color:var(--brand);font-size:1.5rem;">EG</div>
+      <h2>Teacher Login</h2>
+      <p style="margin-bottom:18px;color:var(--text-secondary);">Access requires teacher credentials.</p>
+      <div class="form-group">
+        <label>Teacher name</label>
+        <input id="loginName" placeholder="Axel Garnica Estrada" value="Axel Garnica Estrada">
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input id="loginPass" type="password" placeholder="••••••••" value="axel2026">
+      </div>
+      <div id="loginError" style="color:var(--warn);margin-bottom:12px;display:none;"></div>
+      <button class="btn full" data-action="login">Sign in</button>
+      <p style="margin-top:14px;font-size:0.85rem;color:var(--text-secondary);">Works fully offline &bull; No internet required</p>
+    </div>
+  `;
+}
+
+async function doLogin(el) {
+  const name = $('#loginName', el).value.trim();
+  const pass = $('#loginPass', el).value;
+  const error = $('#loginError', el);
+  if (name === 'Axel Garnica Estrada' && pass === 'axel2026') {
+    await loadState();
+    $('#btnSignOut').style.display = 'inline-flex';
+    navigate(groupListView);
+  } else {
+    error.style.display = 'block';
+    error.textContent = 'Invalid name or password.';
+  }
+}
+
+// ---------- Group List ----------
+async function groupListView() {
+  await loadState();
+  const groups = state.groups;
+  let rows = '';
+  for (const g of groups) {
+    const data = await getGroupData(g);
+    const pct = data.done.length ? Math.round((data.done.length / 20) * 100) : 0;
+    const lvlClass = g.level || 'beginner';
+    rows += html`
+      <div class="card unit-card" style="display:flex;justify-content:space-between;align-items:center;cursor:default;">
+        <div style="flex:1;">
+          <div style="font-weight:700;font-size:1.1rem;">${g.name}</div>
+          <div style="font-size:0.85rem;color:var(--text-secondary);">Level: <span style="font-weight:700;color:var(--${lvlClass})">${lvlClass}</span> &bull; Students: ${data.students.length} &bull; Unit resumed: ${data.resume}</div>
+          <div class="progress-wrap" style="margin-top:8px;width:220px;"><div class="progress-bar" style="width:${pct}%;"></div></div>
+          <div style="font-size:0.8rem;color:var(--text-secondary);margin-top:4px;">${pct}% units completed</div>
+        </div>
+        <div class="btn-row" style="gap:6px;">
+          <button class="btn small" data-view="group" data-group="${g.name}">Open</button>
+          <button class="btn small secondary" data-action="editgroup" data-name="${g.name}" data-index="${groups.indexOf(g)}">Edit</button>
+          <button class="btn small danger" data-action="deletegroup" data-index="${groups.indexOf(g)}">Delete</button>
+        </div>
+      </div>
+    `;
+  }
+  return html`
+    <div class="card" style="max-width:900px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h2>Groups</h2>
+        <button class="btn" data-action="creategroup">+ Create group</button>
+      </div>
+      <div style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:14px;">Groups are not pre-created. Create groups from scratch.</div>
+      ${groups.length ? rows : '<p style="color:var(--text-secondary);">No groups yet. Create your first group.</p>'}
+      <div class="btn-row center mt-24">
+        <button class="btn secondary" style="padding:12px 28px;">Progress for all groups</button>
+        <button class="btn" id="btnSignOutNav" data-action="signout">Sign out</button>
+      </div>
+      <div class="card mt-24" style="padding:16px;">
+        <h3>Support language (Beginner)</h3>
+        <div class="btn-row" style="gap:10px;">
+          <button class="btn ${state.supportLang === 'es' ? 'success' : 'ghost'}" data-action="setlang" data-lang="es">Español</button>
+          <button class="btn ${state.supportLang === 'en' ? 'success' : 'ghost'}" data-action="setlang" data-lang="en">English</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function doEditGroup(d) {
+  const idx = +d.index;
+  const name = prompt('Rename group:', state.groups[idx].name);
+  if (name && name !== state.groups[idx].name) {
+    state.groups[idx].name = name;
+    await saveGroups();
+    navigate(groupListView);
+  }
+}
+async function doDeleteGroup(d) {
+  if (!confirm('Delete this group and all its data?')) return;
+  state.groups.splice(+d.index, 1);
+  await saveGroups();
+  navigate(groupListView);
+}
+async function doSetLang(d) {
+  state.supportLang = d.lang;
+  await api.storeSet('support_lang', d.lang);
+  navigate(groupListView);
+}
+async function doSignOut() {
+  state.currentGroup = null;
+  $('#btnSignOut').style.display = 'none';
+  navigate(loginView);
+}
+
+async function doCreateGroup(el) {
+  const name = prompt('Group name:');
+  if (!name) return;
+  if (state.groups.find(g => g.name === name)) { alert('Group already exists.'); return; }
+  state.groups.push({ name, level: 'beginner' });
+  await saveGroups();
+  navigate(groupListView);
+}
+
+// ---------- Group ----------
+async function groupView(groupName) {
+  const g = state.groups.find(x => x.name === groupName) || { name: groupName, level: 'beginner' };
+  const data = await getGroupData(g);
+  const today = new Date().toISOString().slice(0, 10);
+  const att = await api.storeGet(attKey(g.name, today)) || [];
+  const presentCount = att.filter(a => a.present).length;
+
+  return html`
+    <div class="card" style="max-width:900px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h2>${g.name}</h2>
+        <span class="badge ${data.level === 'beginner' ? 'ok' : 'ghost'}">${data.level}</span>
+      </div>
+      <div class="row" style="margin-bottom:16px;">
+        <div class="card" style="flex:1;padding:16px;">
+          <div style="font-size:0.85rem;color:var(--text-secondary);">Continue where you stopped</div>
+          <div style="font-weight:700;font-size:1.1rem;margin-top:4px;">Unit ${data.resume}</div>
+          <button class="btn mt-24 full" data-view="lesson" data-group="${g.name}" data-level="${data.level}" data-unit="${data.resume}">Continue lesson</button>
+        </div>
+        <div class="card mt-24" style="flex:1;padding:16px;">
+          <div style="font-size:0.85rem;color:var(--text-secondary);">Attendance today (${today})</div>
+          <div style="font-weight:700;font-size:1.1rem;margin-top:4px;">${presentCount} / ${data.students.length} present</div>
+          <button class="btn mt-24 full secondary" data-view="attendance" data-group="${g.name}">Take attendance</button>
+        </div>
+      </div>
+      <div class="btn-row" style="gap:10px;flex-wrap:wrap;">
+        <button class="btn" data-view="unitselect" data-group="${g.name}" data-level="beginner">Lessons (Beginner)</button>
+        <button class="btn" data-view="unitselect" data-group="${g.name}" data-level="intermediate">Lessons (Intermediate)</button>
+        <button class="btn" data-view="unitselect" data-group="${g.name}" data-level="expert">Lessons (Expert)</button>
+        <button class="btn secondary" data-view="students" data-group="${g.name}">Students</button>
+        <button class="btn secondary" data-view="progress" data-group="${g.name}">Progress</button>
+        <button class="btn secondary" data-view="scores" data-group="${g.name}" data-level="${data.level}" data-unit="1">Marks</button>
+        <button class="btn secondary" data-view="homework" data-group="${g.name}">Homework</button>
+        <button class="btn secondary" data-view="fundamentals">Fundamentals</button>
+        <button class="btn secondary" data-view="export" data-group="${g.name}">Export to Excel</button>
+      </div>
+    </div>
+  `;
+}
+
+// ---------- Attendance ----------
+async function attendanceView(groupName) {
+  const g = state.groups.find(x => x.name === groupName);
+  const data = await getGroupData(g);
+  const today = new Date().toISOString().slice(0, 10);
+  const saved = await api.storeGet(attKey(g.name, today)) || [];
+  const presentSet = new Set(saved.filter(a => a.present).map(a => a.student));
+
+  let rows = '';
+  data.students.forEach((s, i) => {
+    const checked = presentSet.has(s) ? 'checked' : '';
+    rows += html`
+      <label style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #f0f0f0;cursor:pointer;">
+        <input type="checkbox" data-student="${i}" ${checked}>
+        <span style="flex:1;">${s}</span>
+      </label>
+    `;
+  });
+
+  return html`
+    <div class="card" style="max-width:600px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h2>Attendance</h2>
+        <div style="font-size:0.85rem;color:var(--text-secondary);">${today}</div>
+      </div>
+      <div style="max-height:420px;overflow-y:auto;border:1px solid var(--divider);border-radius:8px;padding:10px;background:#fff;">
+        ${rows || '<p style="color:var(--text-secondary);">No students yet. Add students first.</p>'}
+      </div>
+      <div class="btn-row mt-24" style="gap:8px;">
+        <button class="btn secondary small" data-action="attall" data-group="${g.name}">All present</button>
+        <button class="btn secondary small" data-action="attclear" data-group="${g.name}">Clear all</button>
+        <button class="btn full success" data-action="saveattendance" data-group="${g.name}">Save attendance</button>
+      </div>
+    </div>
+  `;
+}
+
+async function doAttAll(groupName) {
+  const g = state.groups.find(x => x.name === groupName);
+  const data = await getGroupData(g);
+  const today = new Date().toISOString().slice(0, 10);
+  const rec = data.students.map(s => ({ student: s, present: true }));
+  await api.storeSet(attKey(g.name, today), rec);
+  navigate(attendanceView, g.name);
+}
+async function doAttClear(groupName) {
+  const g = state.groups.find(x => x.name === groupName);
+  const today = new Date().toISOString().slice(0, 10);
+  await api.storeSet(attKey(g.name, today), []);
+  navigate(attendanceView, g.name);
+}
+async function doSaveAttendance(el, groupName) {
+  const g = state.groups.find(x => x.name === groupName);
+  const today = new Date().toISOString().slice(0, 10);
+  const rec = [];
+  $$('[data-student]', el).forEach(cb => {
+    rec.push({ student: g.students[+cb.dataset.student], present: cb.checked });
+  });
+  await api.storeSet(attKey(g.name, today), rec);
+  alert('Attendance saved.');
+  navigate(groupView, groupName);
+}
+
+// ---------- Student List ----------
+async function studentListView(groupName) {
+  const g = state.groups.find(x => x.name === groupName);
+  const data = await getGroupData(g);
+  let rows = '';
+  data.students.forEach((s, i) => {
+    rows += html`
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #f0f0f0;">
+        <div>${s}</div>
+        <div class="btn-row" style="gap:6px;">
+          <button class="btn small ghost" data-action="renamestudent" data-group="${groupName}" data-index="${i}">Rename</button>
+          <button class="btn small danger" data-action="deletestudent" data-group="${groupName}" data-index="${i}">Delete</button>
+        </div>
+      </div>
+    `;
+  });
+  return html`
+    <div class="card" style="max-width:600px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h2>Students</h2>
+        <button class="btn small" data-action="addstudent" data-group="${groupName}">+ Add student</button>
+      </div>
+      <div style="border:1px solid var(--divider);border-radius:8px;">
+        ${rows || '<p style="color:var(--text-secondary);padding:16px;">No students.</p>'}
+      </div>
+    </div>
+  `;
+}
+async function doAddStudent(el, groupName) {
+  const name = prompt('Student name:');
+  if (!name) return;
+  const g = state.groups.find(x => x.name === groupName);
+  const data = await getGroupData(g);
+  data.students.push(name);
+  await api.storeSet(studentsKey(g.name), data.students);
+  navigate(studentListView, groupName);
+}
+async function doDeleteStudent(el, groupName, index) {
+  if (!confirm('Remove student?')) return;
+  const g = state.groups.find(x => x.name === groupName);
+  const data = await getGroupData(g);
+  data.students.splice(+index, 1);
+  await api.storeSet(studentsKey(g.name), data.students);
+  navigate(studentListView, groupName);
+}
+async function doRenameStudent(el, groupName, index) {
+  const g = state.groups.find(x => x.name === groupName);
+  const data = await getGroupData(g);
+  const n = prompt('New name:', data.students[+index]);
+  if (n) {
+    data.students[+index] = n;
+    await api.storeSet(studentsKey(g.name), data.students);
+    navigate(studentListView, groupName);
+  }
+}
+
+// ---------- Unit Select ----------
+async function unitSelectView(groupName, levelId = 'beginner') {
+  const g = state.groups.find(x => x.name === groupName);
+  const data = await getGroupData(g);
+  const doneSet = new Set(data.done);
+  let rows = '';
+  CONTENT.units.forEach(u => {
+    const completed = doneSet.has(u.n);
+    rows += html`
+      <div class="unit-card ${completed ? 'selected' : ''}" data-view="lesson" data-group="${groupName}" data-level="${levelId}" data-unit="${u.n}">
+        <div class="n">${u.n}</div>
+        <div class="theme">${u.theme}</div>
+        <div style="font-size:0.78rem;color:var(--text-secondary);margin-top:4px;">${completed ? 'Completed' : 'Not started'}</div>
+      </div>
+    `;
+  });
+  return html`
+    <div class="card" style="max-width:900px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h2>Units &mdash; ${levelId.charAt(0).toUpperCase() + levelId.slice(1)}</h2>
+        <span class="badge ${data.level === levelId ? 'ok' : 'ghost'}">${data.level}</span>
+      </div>
+      <div class="grid-4">${rows}</div>
+      <p style="font-size:0.8rem;color:var(--text-secondary);margin-top:12px;">Tap a unit to open the lesson. Each unit includes a 20-question quiz.</p>
+    </div>
+  `;
+}
+
+// ---------- Lesson ----------
+async function lessonView(groupName, levelId, unitN) {
+  const g = state.groups.find(x => x.name === groupName);
+  const lesson = CONTENT.lessons[levelId]?.[unitN] || {
+    title: `Unit ${unitN}`,
+    es: CONTENT.lessonsEs[levelId]?.[unitN] || 'Lesson content for this unit.',
+    points: ['Review key concepts.', 'Practice examples.'],
+    examples: ['Example sentence 1.', 'Example sentence 2.'],
+    vocab: ['Vocabulary word 1.', 'Vocabulary word 2.'],
+    mistakes: ['Common mistake to avoid.'],
+  };
+  const esHtml = state.supportLang === 'es' && lesson.es
+    ? html`<div style="background:var(--es-bg);border-left:4px solid var(--es);padding:12px 16px;border-radius:8px;margin-bottom:16px;font-size:0.95rem;color:var(--es);"><strong>En espa&ntilde;ol:</strong> ${lesson.es}</div>`
+    : '';
+
+  return html`
+    <div class="card" style="max-width:820px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h2>${lesson.title}</h2>
+        <button class="btn secondary small" data-view="group" data-group="${groupName}">Back to group</button>
+      </div>
+      ${esHtml}
+      <h3>What you will learn</h3>
+      <ul>${lesson.points.map(p => `<li>${p}</li>`).join('')}</ul>
+      <h3>Examples</h3>
+      <ul>${lesson.examples.map(e => `<li>${e}</li>`).join('')}</ul>
+      <h3>Key vocabulary</h3>
+      <ul>${lesson.vocab.map(v => `<li>${v}</li>`).join('')}</ul>
+      <h3>Common mistakes</h3>
+      <ul>${lesson.mistakes.map(m => `<li>${m}</li>`).join('')}</ul>
+      <div class="btn-row mt-24" style="gap:10px;">
+        <button class="btn full success" data-view="unittest" data-group="${groupName}" data-level="${levelId}" data-unit="${unitN}">Take the unit test</button>
+        <button class="btn full" data-view="print" data-group="${groupName}" data-level="${levelId}" data-unit="${unitN}" mode="lesson">Print this lesson</button>
+        <button class="btn full secondary" data-view="lesson" data-group="${groupName}" data-level="${levelId}" data-unit="${unitN < 20 ? unitN + 1 : 1}">Next unit</button>
+      </div>
+    </div>
+  `;
+}
+
+// ---------- Unit Test ----------
+async function unitTestView(groupName, levelId, unitN) {
+  const g = state.groups.find(x => x.name === groupName);
+  const questions = getQuestions(levelId, unitN);
+  let idx = 0;
+  let score = 0;
+  let answered = false;
+
+  const el = document.createElement('div');
+  el.className = 'view active';
+  el.innerHTML = html`
+    <div class="card" style="max-width:640px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h2>Unit Test &mdash; Unit ${unitN}</h2>
+        <button class="btn secondary small" data-view="lesson" data-group="${groupName}" data-level="${levelId}" data-unit="${unitN}">Back to lesson</button>
+      </div>
+      <div id="testContainer"></div>
+    </div>
+  `;
+  container.innerHTML = '';
+  container.appendChild(el);
+  setupGlobalListeners(el);
+
+  const tc = $('#testContainer', el);
+  const btnPrev = document.createElement('button');
+  const btnReveal = document.createElement('button');
+  const btnNext = document.createElement('button');
+
+  function buildNav() {
+    btnPrev.textContent = '&lt; Prev';
+    btnPrev.className = 'btn small secondary';
+    btnPrev.disabled = idx === 0;
+    btnReveal.textContent = 'Reveal';
+    btnReveal.className = 'btn small secondary';
+    btnReveal.disabled = answered;
+    btnNext.textContent = answered ? 'Finish' : 'Next &gt;';
+    btnNext.className = 'btn small';
+    btnNext.disabled = !answered && idx < questions.length - 1 ? true : false;
+    if (!answered && idx === questions.length - 1) btnNext.disabled = true;
+    return html`<div class="test-nav">${btnPrev.outerHTML}${btnReveal.outerHTML}${btnNext.outerHTML}</div>`;
+  }
+
+  function renderQ() {
+    const q = questions[idx];
+    const opts = q.a.map((o, i) => html`<div class="option" data-opt="${i}">${o}</div>`).join('');
+    return html`
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <div style="font-size:0.85rem;color:var(--text-secondary);">Question ${idx + 1} of ${questions.length}</div>
+        <div class="badge ok">${Math.round(((idx) / questions.length) * 100)}%</div>
+      </div>
+      <div class="progress-wrap"><div class="progress-bar" style="width:${((idx) / questions.length) * 100}%;"></div></div>
+      <div class="question-card">
+        <div class="q-text">${q.q}</div>
+        ${opts}
+      </div>
+      ${buildNav()}
+    `;
+  }
+
+  tc.innerHTML = renderQ();
+  // re-capturar botones del DOM recién insertado
+  const navEls = tc.querySelectorAll('.btn');
+  const curPrev = navEls[0];
+  const curReveal = navEls[1];
+  const curNext = navEls[2];
+
+  function mark(optEl, correct) {
+    answered = true;
+    $$('.option', el).forEach(o => {
+      o.disabled = true;
+      if (+o.dataset.opt === q.correct) o.classList.add('correct');
+      else if (o === optEl) o.classList.add('wrong');
+    });
+    if (correct) score++;
+    curNext.disabled = false;
+    curReveal.disabled = true;
+    curNext.textContent = 'Finish';
+  }
+
+  on(el, 'click', '.option', (e, d) => {
+    if (answered) return;
+    const optIdx = +d.opt;
+    const q = questions[idx];
+    const isCorrect = optIdx === q.correct;
+    mark(e.currentTarget, isCorrect);
+  });
+  on(el, 'click', 'button[data-view]', (e, d) => {
+    // navegación delegada de setupGlobalListeners
+  });
+  on(el, 'click', '.test-nav button', (e) => {
+    if (e.target === curPrev) {
+      if (idx > 0) { idx--; answered = false; tc.innerHTML = renderQ(); rebind(); }
+    } else if (e.target === curReveal) {
+      if (answered) return;
+      const q = questions[idx];
+      $$('.option', el).forEach(o => {
+        if (+o.dataset.opt === q.correct) o.classList.add('correct');
+        o.disabled = true;
+      });
+      answered = true;
+      curNext.disabled = false;
+      curReveal.disabled = true;
+      curNext.textContent = 'Finish';
+    } else if (e.target === curNext) {
+      if (idx < questions.length - 1) {
+        idx++; answered = false; tc.innerHTML = renderQ(); rebind();
+      } else {
+        finishTest();
+      }
+    }
+  });
+
+  function rebind() {
+    // re-capturar botones tras reemplazar innerHTML
+    const navEls2 = tc.querySelectorAll('.test-nav button');
+    // asignar nuevamente mediante eventos delegados ya conectados; solo necesitamos actualizar referencias si usamos closures.
+    // Como usamos delegado con e.target === curPrev etc, actualizamos:
+    // Nota: innerHTML borra los elementos, pero el delegado en el sigue activo. Los nuevos botones son distintos nodos.
+    // Para evitar complejidad, volvemos a render y re-capturamos:
+  }
+
+  // Simplificar: re-render limpio al cambiar de pregunta
+  function renderQFull() {
+    const q = questions[idx];
+    const opts = q.a.map((o, i) => html`<div class="option" data-opt="${i}">${o}</div>`).join('');
+    const pctPrev = Math.round(((idx) / questions.length) * 100);
+    return html`
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <div style="font-size:0.85rem;color:var(--text-secondary);">Question ${idx + 1} of ${questions.length}</div>
+        <div class="badge ok">${pctPrev}%</div>
+      </div>
+      <div class="progress-wrap"><div class="progress-bar" style="width:${pctPrev}%;"></div></div>
+      <div class="question-card">
+        <div class="q-text">${q.q}</div>
+        ${opts}
+      </div>
+      <div class="test-nav">
+        <button class="btn small secondary" id="navPrev" ${idx === 0 ? 'disabled' : ''}>&lt; Prev</button>
+        <button class="btn small secondary" id="navReveal" ${answered ? 'disabled' : ''}>Reveal</button>
+        <button class="btn small" id="navNext" ${(answered || idx === questions.length - 1) && !answered ? 'disabled' : ''}>${idx === questions.length - 1 ? 'Finish' : 'Next &gt;'}</button>
+      </div>
+    `;
+  }
+
+  // Volvemos a un modelo simple: re-render completo y delegado único en el contenedor
+  tc.innerHTML = renderQFull();
+
+  on(el, 'click', '.option', (e, d) => {
+    if (answered) return;
+    const optIdx = +d.opt;
+    const q = questions[idx];
+    const isCorrect = optIdx === q.correct;
+    answered = true;
+    score = isCorrect ? score + 1 : score;
+    $$('.option', el).forEach(o => {
+      o.disabled = true;
+      if (+o.dataset.opt === q.correct) o.classList.add('correct');
+      else if (e.currentTarget === o) o.classList.add('wrong');
+    });
+    $('#navNext', el).disabled = false;
+    $('#navReveal', el).disabled = true;
+    $('#navNext', el).textContent = idx === questions.length - 1 ? 'Finish' : 'Next &gt;';
+  });
+  on(el, 'click', '#navNext', () => {
+    if (idx < questions.length - 1) {
+      idx++; answered = false; tc.innerHTML = renderQFull();
+    } else {
+      finishTest();
+    }
+  });
+  on(el, 'click', '#navPrev', () => {
+    if (idx > 0) { idx--; answered = false; tc.innerHTML = renderQFull(); }
+  });
+  on(el, 'click', '#navReveal', () => {
+    if (answered) return;
+    const q = questions[idx];
+    $$('.option', el).forEach(o => {
+      if (+o.dataset.opt === q.correct) o.classList.add('correct');
+      o.disabled = true;
+    });
+    answered = true;
+    $('#navNext', el).disabled = false;
+    $('#navReveal', el).disabled = true;
+    $('#navNext', el).textContent = idx === questions.length - 1 ? 'Finish' : 'Next &gt;';
+  });
+
+  async function finishTest() {
+    const pct = Math.round((score / questions.length) * 100);
+    const mark = Math.round((pct / 100) * 20);
+    const done = await api.storeGet(doneKey(g.name)) || [];
+    if (!done.includes(unitN)) done.push(unitN);
+    await api.storeSet(doneKey(g.name), done);
+    await api.storeSet(scoreKey(g.name, unitN), mark);
+    const resume = await api.storeGet(resumeKey(g.name)) || 1;
+    if (unitN >= resume) await api.storeSet(resumeKey(g.name), unitN + 1);
+
+    el.innerHTML = html`
+      <div class="card center" style="max-width:640px;margin:0 auto;padding:40px 24px;">
+        <div style="font-size:3rem;font-weight:800;color:var(--brand);">${score}/${questions.length}</div>
+        <div style="font-size:1.25rem;font-weight:700;margin:8px 0;">Grade: ${mark}/20 (${pct}%)</div>
+        <p style="color:var(--text-secondary);margin-top:12px;">Test completed and saved.</p>
+        <div class="btn-row mt-24" style="gap:10px;justify-content:center;">
+          <button class="btn" data-view="lesson" data-group="${groupName}" data-level="${levelId}" data-unit="${unitN}">Back to lesson</button>
+          <button class="btn secondary" data-view="group" data-group="${groupName}">Back to group</button>
+        </div>
+      </div>
+    `;
+  }
+}
+
+// ---------- Progress ----------
+async function progressView(groupName) {
+  const g = state.groups.find(x => x.name === groupName);
+  const data = await getGroupData(g);
+  const doneSet = new Set(data.done);
+  let rows = '';
+  CONTENT.units.forEach(u => {
+    const completed = doneSet.has(u.n);
+    rows += html`<tr><td>${u.n}</td><td>${u.theme}</td><td>${completed ? 'Completed' : '&mdash;'}</td><td><span class="badge ${completed ? 'ok' : 'ghost'}">${completed ? '100%' : '0%'}</span></td></tr>`;
+  });
+  const pct = doneSet.size ? Math.round((doneSet.size / 20) * 100) : 0;
+  return html`
+    <div class="card" style="max-width:800px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h2>Progress</h2>
+        <button class="btn secondary small" data-view="group" data-group="${groupName}">Back to group</button>
+      </div>
+      <div style="font-size:1.5rem;font-weight:800;color:var(--brand);margin-bottom:16px;">${pct}% units completed (${doneSet.size}/20)</div>
+      <div class="progress-wrap"><div class="progress-bar" style="width:${pct}%;"></div></div>
+      <table class="table mt-24">${rows}</table>
+    </div>
+  `;
+}
+
+// ---------- Homework ----------
+async function homeworkView(groupName) {
+  const g = state.groups.find(x => x.name === groupName);
+  const data = await getGroupData(g);
+  let unitBoxes = '';
+  CONTENT.units.forEach(u => {
+    const hw = CONTENT.homework[data.level]?.[u.n];
+    unitBoxes += html`
+      <label style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #f0f0f0;">
+        <input type="checkbox" data-unit="${u.n}"> <strong>Unit ${u.n}</strong> &mdash; ${u.theme}${hw ? ' (has tasks)' : ''}
+      </label>
+    `;
+  });
+  return html`
+    <div class="card" style="max-width:700px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h2>Homework</h2>
+        <button class="btn secondary small" data-view="group" data-group="${groupName}">Back to group</button>
+      </div>
+      <p style="color:var(--text-secondary);margin-bottom:16px;">Select units to generate homework sheets (projector view).</p>
+      <div style="max-height:300px;overflow-y:auto;border:1px solid var(--divider);border-radius:8px;padding:10px;background:#fff;">${unitBoxes}</div>
+      <div class="btn-row mt-24"><button class="btn full" data-action="generatehw" data-group="${groupName}">Generate homework sheets</button></div>
+    </div>
+  `;
+}
+async function doGenerateHW(groupName, unitN) {
+  const g = state.groups.find(x => x.name === groupName);
+  const data = await getGroupData(g);
+  navigate(homeworkSheetView, g.name, unitN || 1);
+}
+
+async function homeworkSheetView(groupName, unitN) {
+  const g = state.groups.find(x => x.name === groupName);
+  const data = await getGroupData(g);
+  const hw = CONTENT.homework[data.level]?.[unitN] || {
+    tasks: ['Task 1.', 'Task 2.'],
+    wordBank: ['Word 1.', 'Word 2.'],
+    writing: 'Write something.',
+    speaking: 'Speak about it.',
+    answers: ['Answer 1.', 'Answer 2.'],
+  };
+  return html`
+    <div class="card print-area" style="max-width:720px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+        <h2>Homework &mdash; Unit ${unitN}</h2>
+        <button class="btn secondary small no-print" onclick="window.print()">Print / Save PDF</button>
+        <button class="btn secondary small no-print" data-view="homework" data-group="${groupName}">Back</button>
+      </div>
+      <h3>Tasks</h3>
+      <ul>${hw.tasks.map(t => `<li>${t}</li>`).join('')}</ul>
+      <h3>Word bank</h3>
+      <p>${hw.wordBank.join(', ')}</p>
+      <h3>Writing</h3>
+      <p>${hw.writing}</p>
+      <h3>Speaking</h3>
+      <p>${hw.speaking}</p>
+      <div class="btn-row mt-24" style="gap:10px;">
+        <button class="btn full" style="background:transparent;border:2px dashed var(--divider);color:var(--text-secondary);" onclick="this.nextElementSibling.style.display='block';this.style.display='none';">Show answers</button>
+        <div style="display:none;background:var(--ok-bg);padding:12px;border-radius:8px;color:var(--ok);font-weight:700;">${hw.answers.join(', ')}</div>
+      </div>
+    </div>
+  `;
+}
+
+// ---------- Fundamentals ----------
+function fundamentalsView() {
+  const { alphabet, numbers, pronunciation } = CONTENT.fundamentals;
+  return html`
+    <div class="card" style="max-width:800px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h2>Fundamentals</h2>
+        <button class="btn secondary small" data-view="group" data-group="${state.currentGroup || ''}">Back to group</button>
+      </div>
+      <div style="display:flex;gap:10px;margin-bottom:24px;">
+        <button class="btn full" id="tabAlpha" style="border-bottom:3px solid var(--brand);">Alphabet</button>
+        <button class="btn full ghost" id="tabNum">Numbers</button>
+        <button class="btn full ghost" id="tabPron">Pronunciation</button>
+      </div>
+      <div id="tabContent">
+        <h3>Alphabet (A-Z)</h3>
+        <div class="grid-4">${alphabet.map(a => html`<div style="border:1px solid var(--divider);border-radius:8px;padding:12px;text-align:center;"><div style="font-size:1.5rem;font-weight:800;color:var(--brand);">${a.letter}</div><div style="font-size:0.8rem;color:var(--text-secondary);">${a.ipa}</div><div>${a.example}</div></div>`).join('')}</div>
+      </div>
+    </div>
+  `;
+}
+
+// ---------- Scores ----------
+async function scoresView(groupName, levelId, unitN) {
+  const g = state.groups.find(x => x.name === groupName);
+  const data = await getGroupData(g);
+  let rows = '';
+  data.students.forEach(s => {
+    const mark = await api.storeGet(scoreStKey(g.name, unitN, s));
+    rows += html`<tr><td>${s}</td><td><input type="number" data-student="${s}" min="0" max="20" value="${mark ?? ''}" style="width:70px;padding:4px;"></td></tr>`;
+  });
+  return html`
+    <div class="card" style="max-width:600px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h2>Marks &mdash; Unit ${unitN}</h2>
+        <div class="btn-row" style="gap:6px;">
+          <button class="btn small secondary" ${unitN === 1 ? 'disabled' : ''} data-view="scores" data-group="${groupName}" data-level="${levelId}" data-unit="${unitN - 1}">&lt;</button>
+          <button class="btn small secondary" ${unitN === 20 ? 'disabled' : ''} data-view="scores" data-group="${groupName}" data-level="${levelId}" data-unit="${unitN + 1}">&gt;</button>
+        </div>
+        <button class="btn small success" data-action="savemarks" data-group="${groupName}" data-level="${levelId}" data-unit="${unitN}">Save</button>
+      </div>
+      <table class="table">${rows}</table>
+    </div>
+  `;
+}
+async function doSaveMarks(el, groupName, levelId, unitN) {
+  const g = state.groups.find(x => x.name === groupName);
+  $$('input[data-student]', el).forEach(input => {
+    const val = input.value === '' ? null : +input.value;
+    if (val !== null) api.storeSet(scoreStKey(g.name, unitN, input.dataset.student), val);
+  });
+  alert('Marks saved.');
+}
+
+// ---------- Export ----------
+async function exportView(groupName) {
+  const g = state.groups.find(x => x.name === groupName);
+  const data = await getGroupData(g);
+  return html`
+    <div class="card" style="max-width:640px;margin:0 auto;">
+      <h2>Export to Excel</h2>
+      <p style="color:var(--text-secondary);margin-bottom:18px;">Export groups, attendance, marks and units to an .xlsx file.</p>
+      <div class="btn-row" style="gap:10px;">
+        <button class="btn full" data-action="exportxlsx" data-group="${groupName}">Download Excel</button>
+      </div>
+      <div class="btn-row mt-24" style="gap:10px;">
+        <button class="btn full secondary" data-action="backup">Backup JSON</button>
+        <button class="btn full secondary" data-action="restore">Restore JSON</button>
+      </div>
+    </div>
+  `;
+}
+async function doExportXLSX(groupName) {
+  const g = state.groups.find(x => x.name === groupName);
+  const data = await getGroupData(g);
+  const sheets = [
+    { name: 'Groups', data: [['Group', 'Level'], [g.name, data.level]] },
+    { name: 'Students', data: [['Students'], ...data.students.map(s => [s])] },
+    { name: 'Marks', data: [['Student', 'Unit', 'Mark'], ...data.students.map(s => [s, '', ''])] },
+    { name: 'Units', data: [['Unit', 'Theme', 'Completed'], ...CONTENT.units.map(u => [u.n, u.theme, data.done.includes(u.n) ? 'Yes' : 'No'])] },
+  ];
+  await api.exportXLSX(`EnglishGrowth_${g.name}.xlsx`, sheets);
+  alert('Excel file saved.');
+}
+
+async function doBackup() {
+  const all = await api.storeAll();
+  const json = JSON.stringify(all, null, 2);
+  const enc = new TextEncoder().encode(json);
+  await api.saveFile('EnglishGrowth_backup.json', 'application/json', enc);
+  alert('Backup saved.');
+}
+async function doRestore() {
+  const json = await api.openFile();
+  if (!json) return;
+  const data = JSON.parse(json);
+  for (const [k, v] of Object.entries(data)) await api.storeSet(k, v);
+  await loadState();
+  navigate(groupListView);
+  alert('Backup restored.');
+}
+
+// ---------- Print ----------
+async function printView(groupName, levelId, unitN, mode) {
+  const g = state.groups.find(x => x.name === groupName);
+  const lesson = CONTENT.lessons[levelId]?.[unitN] || { title: `Unit ${unitN}`, examples: [], vocab: [], mistakes: [] };
+  const questions = getQuestions(levelId, unitN);
+  const qHtml = questions.map((q, i) => html`
+    <div style="margin-bottom:14px;page-break-inside:avoid;">
+      <div style="font-weight:700;">${i + 1}. ${q.q}</div>
+      ${q.a.map((o, j) => html`<div style="margin-left:18px;">${String.fromCharCode(65 + j)}. ${o}</div>`).join('')}
+    </div>
+  `).join('');
+
+  const htmlContent = html`
+    <div class="print-area">
+      <h2 style="border-bottom:2px solid var(--brand);padding-bottom:6px;">English Growth &mdash; ${mode === 'lesson' ? 'Lesson' : 'Unit Exam'}</h2>
+      <div style="font-size:0.9rem;color:var(--text-secondary);margin-bottom:16px;">Group: ${g.name} &bull; Level: ${levelId} &bull; Unit: ${unitN}</div>
+      ${mode === 'lesson' ? html`
+        <h3>${lesson.title}</h3>
+        <ul>${lesson.examples.map(e => `<li>${e}</li>`).join('')}</ul>
+        <h3>Vocabulary</h3>
+        <ul>${lesson.vocab.map(v => `<li>${v}</li>`).join('')}</ul>
+      ` : html`
+        <h3>Exam (20 questions)</h3>
+        <p style="font-size:0.9rem;color:var(--text-secondary);">Circle the correct answer.</p>
+        ${qHtml}
+      `}
+    </div>
+  `;
+
+  const pdfPath = await api.printPDF(htmlContent, `EnglishGrowth_${g.name}_Unit${unitN}.pdf`);
+  alert(`PDF saved to:\n${pdfPath}`);
+  navigate(groupView, groupName);
+}
+
+// ---------- Boot ----------
+navigate(loginView);
+</script>
+</body>
+</html>
