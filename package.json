@@ -14,12 +14,10 @@
   },
   "build": {
     "appId": "com.english.growth",
+    "defaultArch": ["x64"],
     "mac": {
       "target": [
         "dmg"
-      ],
-      "arch": [
-        "x64"
       ],
       "icon": "build/icon.png",
       "hardenedRuntime": true,
