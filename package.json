@@ -18,6 +18,9 @@
       "target": [
         "dmg"
       ],
+      "arch": [
+        "x64"
+      ],
       "icon": "build/icon.png",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
