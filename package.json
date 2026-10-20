@@ -17,8 +17,9 @@
     "defaultArch": "x64",
     "mac": {
       "target": ["dmg"],
+      "minimumSystemVersion": "10.13",
       "icon": "build/icon.png",
-      "hardenedRuntime": true,
+      "hardenedRuntime": false,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "extendInfo": {
@@ -45,8 +46,8 @@
     ]
   },
   "devDependencies": {
-    "electron": "^22.3.26",
-    "electron-builder": "^24.9.1"
+    "electron": "^20.0.0",
+    "electron-builder": "^24.0.0"
   },
   "dependencies": {
     "electron-store": "^8.1.0",
