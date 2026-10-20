@@ -14,7 +14,7 @@
   },
   "build": {
     "appId": "com.english.growth",
-    "defaultArch": ["x64"],
+    "defaultArch": "x64",
     "mac": {
       "target": [
         "dmg"
