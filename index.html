@@ -39,9 +39,13 @@ async function render(viewFn, ...args) {
   container.innerHTML = '';
   const el = document.createElement('div');
   el.className = 'view active';
-  const result = viewFn(...args);
-  const text = (result && typeof result.then === 'function') ? await result : result;
-  el.innerHTML = (text === undefined || text === null) ? '' : text;
+  try {
+    const result = viewFn(...args);
+    const text = (result && typeof result.then === 'function') ? await result : result;
+    el.innerHTML = (text === undefined || text === null) ? '' : text;
+  } catch (err) {
+    el.innerHTML = '<div class="card" style="border-left:4px solid var(--warn);"><h2>Error</h2><pre style="white-space:pre-wrap;color:var(--warn);">' + String((err && err.message) || err) + '</pre><button class="btn" data-view="lesson">Retry</button></div>';
+  }
   container.appendChild(el);
   setupGlobalListeners(el);
   return el;
@@ -391,4 +395,5 @@ navigate(lessonView);
 </script>
 </body>
 </html>
+
 
