@@ -9,5 +9,6 @@ contextBridge.exposeInMainWorld('api', {
   saveFile: (defaultName, mimeType, data) =>
     ipcRenderer.invoke('save:file', { defaultName, mimeType, data }),
   openFile: () => ipcRenderer.invoke('open:file'),
+  openDataDir: () => ipcRenderer.invoke('app:openDataDir'),
   exportXLSX: (filename, sheets) => ipcRenderer.invoke('export:xlsx', { filename, sheets }),
 });

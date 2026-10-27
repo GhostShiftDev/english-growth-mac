@@ -9,22 +9,31 @@
 <body>
 <div class="app">
   <header>
-    <div style="display:flex;align-items:center;gap:10px;">
-      <div style="width:34px;height:34px;background:white;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:800;color:var(--brand);font-size:1.1rem;">EG</div>
+    <div class="brand">
+      <div class="logo"><img src="build/icon.png" alt="English Growth" height="32" width="32"></div>
       <div>
-        <div style="font-weight:700;font-size:1.15rem;">English Growth</div>
-        <div style="opacity:0.9;font-size:0.85rem;">English learning for teachers &bull; Works fully offline</div>
+        <div class="brand-name">English Growth</div>
+        <div class="brand-sub">Aprende inglés</div>
       </div>
     </div>
-    <div style="display:flex;align-items:center;gap:10px;">
-      <span id="appVersion" style="font-size:0.78rem;opacity:0.85;">v1.0.1</span>
-      <button class="btn ghost small" id="btnSignOut" style="display:none;">Sign out</button>
+
+    <nav id="topnav" class="topnav">
+      <button class="navbtn" data-view="lesson">Lección</button>
+      <button class="navbtn" data-view="test">Test</button>
+      <button class="navbtn" data-view="task">Tarea</button>
+      <button class="navbtn" data-view="groups">Grupos</button>
+      <button class="navbtn" data-view="reports">Reportes</button>
+    </nav>
+
+    <div class="header-right">
+      <span id="appVersion" class="version">v1.1.0</span>
+      <button class="btn ghost small" id="btnSignOut" style="display:none;">Salir</button>
     </div>
   </header>
   <main id="mainContainer">
     <div class="card center" style="max-width:420px;margin:60px auto;">
-      <h2>Starting&hellip;</h2>
-      <p>If this message stays on screen, the app interface could not start.</p>
+      <h2>Cargando&hellip;</h2>
+      <p>Si este mensaje permanece, la interfaz no pudo iniciar.</p>
     </div>
   </main>
 </div>
@@ -34,17 +43,37 @@
 (function () {
   'use strict';
 
-  // ---------------------------------------------------------------- setup
-  var C = window.CONTENT;
-  var buildQuestions = window.getQuestions;
+  // ================================================================ setup
+  var EG = window.EG_CONTENT;
   var container = document.getElementById('mainContainer');
+  var topnav = document.getElementById('topnav');
   var signOutBtn = document.getElementById('btnSignOut');
   var versionEl = document.getElementById('appVersion');
   var nativeApi = window.api;
 
-  if (C && C.version && versionEl) versionEl.textContent = 'v' + C.version;
+  var DATA_KEY = 'eg_data';
+  var data = null;
+  var currentViewName = 'login';
+  var activeLessonId = (EG && EG.lessons && EG.lessons[0]) ? EG.lessons[0].id : null;
+  var lastReport = null;
+  var saveTimer = null;
+  var toastTimer = null;
 
-  // Fallback de almacenamiento: si el preload fallara, la app sigue funcionando.
+  if (EG && EG.app && EG.app.version && versionEl) versionEl.textContent = 'v' + EG.app.version;
+
+  var ui = {
+    groupTab: {},
+    attDate: {},
+    hwDate: {},
+    report: {
+      groupId: '',
+      mode: 'month',
+      day: todayStr(),
+      month: monthStr()
+    }
+  };
+
+  // ================================================================ api
   function lsGet(key) {
     try {
       var raw = window.localStorage.getItem('eg:' + key);
@@ -54,6 +83,31 @@
   function lsSet(key, value) {
     try { window.localStorage.setItem('eg:' + key, JSON.stringify(value)); return true; }
     catch (e) { return false; }
+  }
+
+  function downloadFallback(filename, text, mime) {
+    var blob = new Blob([text], { type: mime || 'text/plain;charset=utf-8;' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    window.setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    return filename;
+  }
+
+  function sheetsToCsv(sheets) {
+    var lines = [];
+    sheets.forEach(function (sheet) {
+      lines.push('### ' + sheet.name);
+      sheet.data.forEach(function (row) {
+        lines.push(row.map(function (cell) {
+          return '"' + String(cell === undefined || cell === null ? '' : cell).replace(/"/g, '""') + '"';
+        }).join(','));
+      });
+      lines.push('');
+    });
+    return lines.join('\r\n');
   }
 
   var api = {
@@ -72,14 +126,45 @@
       return Promise.resolve(lsSet(key, value));
     },
     printPDF: function (html, filename) {
-      if (nativeApi && typeof nativeApi.printPDF === 'function') {
-        return nativeApi.printPDF(html, filename);
-      }
+      if (nativeApi && typeof nativeApi.printPDF === 'function') return nativeApi.printPDF(html, filename);
+      return Promise.resolve(null);
+    },
+    exportXLSX: function (filename, sheets) {
+      if (nativeApi && typeof nativeApi.exportXLSX === 'function') return nativeApi.exportXLSX(filename, sheets);
+      return Promise.resolve(downloadFallback(filename.replace(/\.xlsx$/i, '.csv'), sheetsToCsv(sheets), 'text/csv;charset=utf-8;'));
+    },
+    saveFile: function (defaultName, mimeType, contents) {
+      if (nativeApi && typeof nativeApi.saveFile === 'function') return nativeApi.saveFile(defaultName, mimeType, contents);
+      return Promise.resolve(downloadFallback(defaultName, contents, mimeType));
+    },
+    openFile: function () {
+      if (nativeApi && typeof nativeApi.openFile === 'function') return nativeApi.openFile();
+      return Promise.resolve(null);
+    },
+    openDataDir: function () {
+      if (nativeApi && typeof nativeApi.openDataDir === 'function') return nativeApi.openDataDir();
       return Promise.resolve(null);
     }
   };
 
-  // ---------------------------------------------------------------- utils
+  // ================================================================ utils
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function todayStr() {
+    var d = new Date();
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  }
+  function monthStr() {
+    var d = new Date();
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1);
+  }
+  function uid(prefix) {
+    return prefix + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
+  function esc(value) {
+    return String(value === undefined || value === null ? '' : value)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
   function html(strings) {
     var values = Array.prototype.slice.call(arguments, 1);
     return strings.reduce(function (acc, s, i) {
@@ -87,37 +172,216 @@
       return acc + s + (v === undefined || v === null ? '' : v);
     }, '');
   }
-
-  function esc(v) {
-    return String(v)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
-
   function $(sel, root) { return (root || container).querySelector(sel); }
   function $$(sel, root) { return Array.prototype.slice.call((root || container).querySelectorAll(sel)); }
+  function safeFile(name) {
+    return String(name).replace(/[^\w\-]+/g, '_').replace(/^_+|_+$/g, '') || 'reporte';
+  }
+  function formatDateHuman(day) {
+    var p = String(day).split('-');
+    if (p.length !== 3) return day;
+    return p[2] + '/' + p[1] + '/' + p[0];
+  }
 
-  function on(root, ev, sel, handler) {
-    root.addEventListener(ev, function (e) {
-      var target = e.target && e.target.closest ? e.target.closest(sel) : null;
-      if (target && root.contains(target)) handler.call(target, e, target.dataset);
+  // ================================================================ data
+  function blankData() {
+    return {
+      schemaVersion: 2,
+      createdAt: new Date().toISOString(),
+      updatedAt: null,
+      groups: [],
+      attendance: {},
+      homework: {},
+      testResults: [],
+      settings: {}
+    };
+  }
+
+  function normalizeStudent(raw, i) {
+    var st = (raw && typeof raw === 'object') ? raw : { name: String(raw || '') };
+    var out = Object.assign({}, st);
+    out.id = out.id || uid('s');
+    out.name = String(out.name || ('Alumno ' + (i + 1))).trim();
+    out.createdAt = out.createdAt || new Date().toISOString();
+    return out;
+  }
+
+  function normalizeGroup(raw, i) {
+    var g = (raw && typeof raw === 'object') ? raw : { name: String(raw || '') };
+    var out = Object.assign({}, g);
+    out.id = out.id || uid('g');
+    out.name = String(out.name || ('Grupo ' + (i + 1))).trim();
+    out.createdAt = out.createdAt || new Date().toISOString();
+    out.students = Array.isArray(out.students) ? out.students.map(normalizeStudent) : [];
+    return out;
+  }
+
+  // Conserva cualquier campo desconocido para no romper datos de versiones futuras.
+  function normalizeData(raw) {
+    var input = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+    var out = Object.assign({}, blankData(), input);
+    out.schemaVersion = Math.max(2, Number(input.schemaVersion) || 0);
+    out.groups = Array.isArray(input.groups) ? input.groups.map(normalizeGroup) : [];
+    out.attendance = (input.attendance && typeof input.attendance === 'object') ? input.attendance : {};
+    out.homework = (input.homework && typeof input.homework === 'object') ? input.homework : {};
+    out.testResults = Array.isArray(input.testResults) ? input.testResults : [];
+    out.settings = (input.settings && typeof input.settings === 'object') ? input.settings : {};
+    out.createdAt = out.createdAt || new Date().toISOString();
+    return out;
+  }
+
+  function loadData() {
+    return api.storeGet(DATA_KEY).then(function (raw) {
+      data = normalizeData(raw);
+      if (!raw) {
+        return api.storeGet('groups').then(function (legacy) {
+          if (Array.isArray(legacy) && legacy.length) {
+            data.groups = legacy.map(normalizeGroup);
+          }
+          return saveData(true);
+        })['catch'](function () { return saveData(true); });
+      }
+      return data;
     });
+  }
+
+  function saveData(silent) {
+    data.updatedAt = new Date().toISOString();
+    return api.storeSet(DATA_KEY, data).then(function () {
+      if (!silent) markSaved();
+      return true;
+    })['catch'](function (err) {
+      toast('No se pudo guardar: ' + ((err && err.message) || err), true);
+      return false;
+    });
+  }
+
+  function markSaved() {
+    var el = document.getElementById('saveState');
+    if (el) {
+      el.textContent = 'Guardado ✓';
+      el.classList.add('ok');
+    }
+    window.clearTimeout(saveTimer);
+    saveTimer = window.setTimeout(function () {
+      var e = document.getElementById('saveState');
+      if (e) { e.textContent = 'Guardado automáticamente'; e.classList.remove('ok'); }
+    }, 1600);
+  }
+
+  function findGroup(gid) {
+    if (!data) return null;
+    for (var i = 0; i < data.groups.length; i++) if (data.groups[i].id === gid) return data.groups[i];
+    return null;
+  }
+  function findStudent(group, sid) {
+    if (!group) return null;
+    for (var i = 0; i < group.students.length; i++) if (group.students[i].id === sid) return group.students[i];
+    return null;
+  }
+
+  function recordFor(kind, gid, day, create) {
+    var root = kind === 'attendance' ? data.attendance : data.homework;
+    if (!root[gid]) {
+      if (!create) return null;
+      root[gid] = {};
+    }
+    if (!root[gid][day]) {
+      if (!create) return null;
+      root[gid][day] = {};
+    }
+    return root[gid][day];
+  }
+
+  function hasOwn(obj, key) {
+    return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+  }
+
+  function monthStats(gid, sid) {
+    var month = monthStr();
+    var att = data.attendance[gid] || {};
+    var hw = data.homework[gid] || {};
+    var present = 0, homework = 0;
+    Object.keys(att).forEach(function (day) {
+      if (day.indexOf(month) === 0 && att[day] && att[day][sid] === true) present++;
+    });
+    Object.keys(hw).forEach(function (day) {
+      if (day.indexOf(month) === 0 && hw[day] && hw[day][sid] === true) homework++;
+    });
+    return { present: present, homework: homework };
+  }
+
+  // ================================================================ ui helpers
+  function toast(message, isError) {
+    var el = document.getElementById('toast');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'toast';
+      document.body.appendChild(el);
+    }
+    el.textContent = message;
+    el.className = 'toast show' + (isError ? ' error' : '');
+    window.clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(function () { el.className = 'toast'; }, 2600);
+  }
+
+  function closeDialog() {
+    var d = document.getElementById('egDialog');
+    if (d) d.remove();
+  }
+
+  function openDialog(opts) {
+    closeDialog();
+    var overlay = document.createElement('div');
+    overlay.id = 'egDialog';
+    overlay.className = 'dialog-overlay';
+    overlay.innerHTML =
+      '<div class="dialog">' +
+        '<h3>' + esc(opts.title) + '</h3>' +
+        (opts.message ? '<p>' + esc(opts.message) + '</p>' : '') +
+        (opts.inputValue !== undefined ? '<input id="dlgInput" value="' + esc(opts.inputValue) + '">' : '') +
+        '<div class="actions">' +
+          '<button class="btn secondary" data-dlg="cancel">Cancelar</button>' +
+          '<button class="btn ' + (opts.danger ? 'danger' : '') + '" data-dlg="ok">' + esc(opts.okLabel || 'Aceptar') + '</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(overlay);
+
+    function finish(ok) {
+      if (!ok) { closeDialog(); return; }
+      var input = overlay.querySelector('#dlgInput');
+      var value = input ? input.value.trim() : undefined;
+      if (input && !value) { toast('Escribe un nombre.', true); input.focus(); return; }
+      var result = opts.onOk ? opts.onOk(value) : true;
+      if (result !== false) closeDialog();
+    }
+
+    overlay.addEventListener('click', function (e) {
+      if (e.target === overlay || e.target.closest('[data-dlg="cancel"]')) finish(false);
+      else if (e.target.closest('[data-dlg="ok"]')) finish(true);
+    });
+
+    var dlgInput = overlay.querySelector('#dlgInput');
+    if (dlgInput) {
+      dlgInput.focus();
+      dlgInput.select();
+      dlgInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+      });
+    }
   }
 
   function errorCard(message) {
     return '<div class="card" style="max-width:680px;margin:40px auto;border-left:4px solid var(--warn);">' +
       '<h2 style="color:var(--warn);">Error</h2>' +
-      '<pre style="white-space:pre-wrap;font-size:0.85rem;background:var(--bg);padding:12px;border-radius:8px;color:var(--warn);">' +
-      esc(message || 'Unknown error') +
-      '</pre>' +
-      '<button class="btn" data-view="login">Back to login</button>' +
+      '<pre class="error-pre">' + esc(message) + '</pre>' +
+      '<button class="btn" data-view="lesson">Volver</button>' +
       '</div>';
   }
 
-  // ---------------------------------------------------------------- render
+  // ================================================================ render
   async function render(viewFn) {
     var args = Array.prototype.slice.call(arguments, 1);
-    if (!container) throw new Error('mainContainer not found');
     container.innerHTML = '';
     var el = document.createElement('div');
     el.className = 'view active';
@@ -132,65 +396,48 @@
     return el;
   }
 
-  function navigate(viewFn) {
-    return render.apply(null, arguments);
+  var views = {};
+
+  function navigate(name) {
+    var args = Array.prototype.slice.call(arguments, 1);
+    var fn = views[name];
+    if (!fn) { toast('Vista no encontrada: ' + name, true); return; }
+    currentViewName = name;
+    setActiveNav(name);
+    return render.apply(null, [fn].concat(args));
   }
 
-  // ---------------------------------------------------------------- state
-  var state = {
-    groups: [],
-    supportLang: 'es'
-  };
-
-  async function loadFullState() {
-    try {
-      var groups = await api.storeGet('groups');
-      var lang = await api.storeGet('support_lang');
-      state.groups = groups || [];
-      state.supportLang = lang || 'es';
-    } catch (e) {
-      // la app funciona igual sin preferencias guardadas
-      state.groups = state.groups || [];
-      state.supportLang = state.supportLang || 'es';
-    }
+  function setActiveNav(name) {
+    var map = { lesson: 'lesson', test: 'test', task: 'task', groups: 'groups', group: 'groups', reports: 'reports', print: 'lesson' };
+    var key = map[name] || '';
+    Array.prototype.forEach.call(document.querySelectorAll('.navbtn'), function (btn) {
+      btn.classList.toggle('active', btn.getAttribute('data-view') === key);
+    });
   }
 
-  // ---------------------------------------------------------------- listeners
-  on(document, 'click', '[data-view]', function (e, d) {
-    var v = d.view;
-    if (v === 'login') navigate(loginView);
-    else if (v === 'lesson') navigate(lessonView);
-    else if (v === 'test') navigate(testView);
-    else if (v === 'task') navigate(taskView);
-    else if (v === 'print') navigate(printView);
-  });
-
-  on(document, 'click', '[data-action]', function (e, d) {
-    if (d.action === 'login') doLogin(e.target.closest('.view') || container);
-  });
-
-  if (signOutBtn) {
-    signOutBtn.addEventListener('click', function () { doSignOut(); });
+  function showShell(show) {
+    if (topnav) topnav.style.display = show ? 'flex' : 'none';
+    if (signOutBtn) signOutBtn.style.display = show ? 'inline-flex' : 'none';
   }
 
-  // ---------------------------------------------------------------- login
+  // ================================================================ login
   function loginView() {
     return html`
-      <div class="card center" style="max-width:420px;margin:50px auto;">
-        <div style="width:72px;height:72px;background:var(--brand-light);border-radius:16px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-weight:800;color:var(--brand);font-size:1.5rem;">EG</div>
-        <h2>Teacher Login</h2>
-        <p style="margin-bottom:18px;">Access requires teacher credentials.</p>
+      <div class="card center" style="max-width:430px;margin:50px auto;">
+        <div class="login-logo"><img src="build/icon.png" alt="English Growth" height="32" width="32"></div>
+        <h2>Acceso del profesor</h2>
+        <p style="margin-bottom:18px;">Ingresa con tus credenciales para continuar.</p>
         <div class="form-group" style="text-align:left;">
-          <label for="loginName">Teacher name</label>
+          <label for="loginName">Nombre del profesor</label>
           <input id="loginName" autocomplete="username" value="Axel Garnica Estrada">
         </div>
         <div class="form-group" style="text-align:left;">
-          <label for="loginPass">Password</label>
+          <label for="loginPass">Contraseña</label>
           <input id="loginPass" type="password" autocomplete="current-password" value="axel2026">
         </div>
-        <div id="loginError" style="color:var(--warn);margin-bottom:12px;display:none;"></div>
-        <button class="btn full" data-action="login">Sign in</button>
-        <p style="margin-top:14px;font-size:0.85rem;">Works fully offline &bull; No internet required</p>
+        <div id="loginError" class="form-error" style="display:none;"></div>
+        <button class="btn full" data-action="login">Entrar</button>
+        <p style="margin-top:14px;font-size:0.85rem;">Funciona sin conexión &bull; No necesita internet</p>
       </div>
     `;
   }
@@ -203,58 +450,88 @@
     var pass = passEl ? passEl.value : '';
 
     if (name === 'Axel Garnica Estrada' && pass === 'axel2026') {
-      try { await loadFullState(); } catch (e) { /* no bloquea el login */ }
-      if (signOutBtn) signOutBtn.style.display = 'inline-flex';
-      navigate(lessonView);
+      try { await loadData(); } catch (e) { data = normalizeData(null); }
+      showShell(true);
+      toast('Bienvenido, Axel');
+      navigate('lesson');
     } else if (errEl) {
       errEl.style.display = 'block';
-      errEl.textContent = 'Invalid name or password.';
+      errEl.textContent = 'Nombre o contraseña incorrectos.';
     }
   }
 
   function doSignOut() {
-    if (signOutBtn) signOutBtn.style.display = 'none';
-    navigate(loginView);
+    showShell(false);
+    navigate('login');
   }
 
-  // ---------------------------------------------------------------- lesson
+  // ================================================================ lesson
   function lessonView() {
-    var lesson = C.lesson;
-    var esHtml = (lesson.es)
-      ? html`<div style="background:var(--es-bg);border-left:4px solid var(--es);padding:12px 16px;border-radius:8px;margin-bottom:16px;font-size:0.95rem;color:var(--es);"><strong>En espa&ntilde;ol:</strong> ${lesson.es}</div>`
+    var lesson = EG.getLesson(activeLessonId);
+    var intro = lesson.introEs
+      ? '<div class="es-box"><strong>En español:</strong> ' + esc(lesson.introEs) + '</div>'
       : '';
 
-    function list(items) {
-      return '<ul>' + items.map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>';
+    function bullets(items) {
+      return '<ul class="lesson-list">' + items.map(function (item) {
+        return '<li>' +
+          (item.es ? '<span class="es-text">' + esc(item.es) + '</span> ' : '') +
+          (item.en ? '<span class="en-phrase">&ldquo;' + esc(item.en) + '&rdquo;</span>' : '') +
+          '</li>';
+      }).join('') + '</ul>';
     }
 
+    var vocabRows = lesson.vocab.map(function (v) {
+      return '<tr>' +
+        '<td class="en-cell">' + esc(v.en) + '</td>' +
+        '<td>' + esc(v.es) + '</td>' +
+        '<td class="phon-en">' + (v.phonEn ? esc(v.phonEn) : '') + '</td>' +
+      '</tr>';
+    }).join('');
+
     return html`
-      <div class="card" style="max-width:820px;margin:0 auto;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:10px;">
-          <h2 style="margin-bottom:0;">${lesson.title}</h2>
-          <button class="btn secondary small" data-view="lesson">Restart</button>
+      <div class="card" style="max-width:860px;margin:0 auto;">
+        <div class="lesson-head">
+          <div>
+            <div class="eyebrow">Lección ${lesson.unit} &bull; Inglés</div>
+            <h2 style="margin-bottom:2px;">${esc(lesson.titleEs)}</h2>
+            <div class="lesson-title-en">${esc(lesson.titleEn)}</div>
+          </div>
+          <span class="pill">Objetivo: pedir y decir la hora</span>
         </div>
-        ${esHtml}
-        <h3>What you will learn</h3>
-        ${list(lesson.points)}
-        <h3>Examples</h3>
-        ${list(lesson.examples)}
-        <h3>Key vocabulary</h3>
-        <p>${lesson.vocab.map(esc).join(' &bull; ')}</p>
-        <h3>Common mistakes</h3>
-        ${list(lesson.mistakes)}
-        <div class="btn-row mt-24" style="gap:10px;">
-          <button class="btn full success" data-view="test">Take the small test</button>
-          <button class="btn full" data-view="task">View the task</button>
-          <button class="btn full secondary" data-view="print">Print / Save PDF</button>
+        <p class="objective">${esc(lesson.objectiveEs)}</p>
+        ${intro}
+
+        <h3>Lo que vas a aprender</h3>
+        ${bullets(lesson.points)}
+
+        <h3>Ejemplos</h3>
+        ${bullets(lesson.examples)}
+
+        <h3>Vocabulario clave</h3>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th>Inglés</th><th>Español</th></tr></thead>
+            <tbody>${vocabRows}</tbody>
+          </table>
+        </div>
+
+        <h3>Errores comunes</h3>
+        ${bullets(lesson.mistakes)}
+
+        <div class="btn-row mt-24">
+          <button class="btn success" data-view="test">Hacer el test</button>
+          <button class="btn" data-view="task">Ver la tarea</button>
+          <button class="btn secondary" data-view="print">Imprimir / Guardar PDF</button>
         </div>
       </div>
     `;
   }
 
-  // ---------------------------------------------------------------- test
+  // ================================================================ test
   function testView() {
-    var questions = (typeof buildQuestions === 'function') ? buildQuestions('beginner', 1) : (C.questions || []);
+    var lesson = EG.getLesson(activeLessonId);
+    var questions = EG.getQuestions(activeLessonId);
     var idx = 0;
     var score = 0;
     var answered = false;
@@ -262,10 +539,13 @@
     var el = document.createElement('div');
     el.className = 'view active';
     el.innerHTML = html`
-      <div class="card" style="max-width:660px;margin:0 auto;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:10px;">
-          <h2 style="margin-bottom:0;">Small Test</h2>
-          <button class="btn secondary small" data-view="lesson">Back to lesson</button>
+      <div class="card" style="max-width:680px;margin:0 auto;">
+        <div class="lesson-head">
+          <div>
+            <div class="eyebrow">Test de la lección</div>
+            <h2 style="margin-bottom:0;">${esc(lesson.titleEs)}</h2>
+          </div>
+          <button class="btn secondary small" data-view="lesson">Volver a la lección</button>
         </div>
         <div id="testContainer"></div>
       </div>
@@ -282,9 +562,9 @@
       }).join('');
       var pct = Math.round((idx / questions.length) * 100);
       return html`
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-          <div style="font-size:0.85rem;color:var(--text-secondary);">Question ${idx + 1} of ${questions.length}</div>
-          <div class="badge ok">${pct}%</div>
+        <div class="question-meta">
+          <span>Pregunta ${idx + 1} de ${questions.length}</span>
+          <span class="badge ok">${pct}%</span>
         </div>
         <div class="progress-wrap"><div class="progress-bar" style="width:${pct}%;"></div></div>
         <div class="question-card" style="margin-top:16px;">
@@ -292,57 +572,53 @@
           ${opts}
         </div>
         <div class="test-nav">
-          <button class="btn small secondary" id="navPrev" ${idx === 0 ? 'disabled' : ''}>&lt; Prev</button>
-          <button class="btn small secondary" id="navReveal" ${answered ? 'disabled' : ''}>Reveal</button>
-          <button class="btn small" id="navNext" ${answered ? '' : 'disabled'}>${idx === questions.length - 1 ? 'Finish' : 'Next &gt;'}</button>
+          <button class="btn small secondary" id="navPrev" ${idx === 0 ? 'disabled' : ''}>Anterior</button>
+          <button class="btn small secondary" id="navReveal" ${answered ? 'disabled' : ''}>Ver respuesta</button>
+          <button class="btn small" id="navNext" ${answered ? '' : 'disabled'}>${idx === questions.length - 1 ? 'Terminar' : 'Siguiente'}</button>
         </div>
       `;
     }
 
-    function lockOptions(chosen) {
+    function lockOptions(chosenOpt) {
       $$('.option', el).forEach(function (o) {
         o.classList.add('locked');
         if (+o.dataset.opt === questions[idx].correct) o.classList.add('correct');
-        else if (chosen && +o.dataset.opt === +chosen.dataset.opt) o.classList.add('wrong');
+        else if (chosenOpt && o === chosenOpt) o.classList.add('wrong');
       });
       var next = $('#navNext', el);
       var reveal = $('#navReveal', el);
       if (next) {
         next.disabled = false;
-        next.textContent = idx === questions.length - 1 ? 'Finish' : 'Next >';
+        next.textContent = idx === questions.length - 1 ? 'Terminar' : 'Siguiente';
       }
       if (reveal) reveal.disabled = true;
     }
 
     tc.innerHTML = renderQ();
 
-    on(el, 'click', '.option', function (e, d) {
-      if (answered) return;
-      answered = true;
-      var optIdx = +d.opt;
-      if (optIdx === questions[idx].correct) score++;
-      lockOptions(this);
-    });
-
-    on(el, 'click', '#navReveal', function () {
-      if (answered) return;
-      answered = true;
-      lockOptions(null);
-    });
-
-    on(el, 'click', '#navNext', function () {
-      if (!answered) return;
-      if (idx < questions.length - 1) {
-        idx++;
-        answered = false;
-        tc.innerHTML = renderQ();
-      } else {
-        finishTest();
+    el.addEventListener('click', function (e) {
+      var opt = e.target.closest ? e.target.closest('.option') : null;
+      if (opt && el.contains(opt)) {
+        if (answered) return;
+        answered = true;
+        if (+opt.dataset.opt === questions[idx].correct) score++;
+        lockOptions(opt);
+        return;
       }
-    });
-
-    on(el, 'click', '#navPrev', function () {
-      if (idx > 0) {
+      var btn = e.target.closest ? e.target.closest('button') : null;
+      if (!btn) return;
+      if (btn.id === 'navReveal' && !answered) {
+        answered = true;
+        lockOptions(null);
+      } else if (btn.id === 'navNext' && answered) {
+        if (idx < questions.length - 1) {
+          idx++;
+          answered = false;
+          tc.innerHTML = renderQ();
+        } else {
+          finishTest();
+        }
+      } else if (btn.id === 'navPrev' && idx > 0) {
         idx--;
         answered = false;
         tc.innerHTML = renderQ();
@@ -353,100 +629,781 @@
       var pct = Math.round((score / questions.length) * 100);
       var mark = Math.round((pct / 100) * 20);
       try {
-        var done = await api.storeGet('done:current');
-        done = done || [];
-        done.push({ date: new Date().toISOString(), score: score, total: questions.length, mark: mark });
-        await api.storeSet('done:current', done);
-      } catch (e) { /* guardar no es obligatorio */ }
+        data.testResults.push({
+          lessonId: activeLessonId,
+          date: new Date().toISOString(),
+          score: score,
+          total: questions.length,
+          mark: mark
+        });
+        await saveData(true);
+      } catch (e) { /* el resultado no bloquea */ }
 
       el.innerHTML = html`
-        <div class="card center" style="max-width:660px;margin:0 auto;padding:36px 24px;">
-          <div style="font-size:3rem;font-weight:800;color:var(--brand);">${score}/${questions.length}</div>
-          <div style="font-size:1.25rem;font-weight:700;margin:8px 0;">Grade: ${mark}/20 (${pct}%)</div>
-          <p style="margin-top:12px;">Test completed.</p>
-          <div class="btn-row mt-24" style="gap:10px;justify-content:center;">
-            <button class="btn" data-view="lesson">Back to lesson</button>
-            <button class="btn secondary" data-view="task">Go to task</button>
+        <div class="card center" style="padding:36px 24px;">
+          <div class="eyebrow">Resultado</div>
+          <div class="score-big">${score}/${questions.length}</div>
+          <div class="score-grade">Calificación: ${mark}/20 (${pct}%)</div>
+          <p style="margin-top:12px;">Test completado. El resultado quedó guardado.</p>
+          <div class="btn-row mt-24" style="justify-content:center;">
+            <button class="btn" data-view="lesson">Volver a la lección</button>
+            <button class="btn secondary" data-view="task">Ir a la tarea</button>
           </div>
         </div>
       `;
     }
   }
 
-  // ---------------------------------------------------------------- task
+  // ================================================================ task
   function taskView() {
-    var task = C.task;
-    function list(items) {
-      return '<ul>' + items.map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>';
-    }
+    var lesson = EG.getLesson(activeLessonId);
+    var task = lesson.task;
+
+    var exercises = task.exercises.map(function (ex) {
+      return '<li>' + (ex.es ? '<span class="es-text">' + esc(ex.es) + '</span> ' : '') +
+        (ex.en ? '<span class="en-phrase">&ldquo;' + esc(ex.en) + '&rdquo;</span>' : '') + '</li>';
+    }).join('');
+
+    var answers = task.answers.map(function (a) {
+      return '<div class="answer-row"><span class="es-text">' + esc(a.es) + '</span> ' +
+        '<span class="en-phrase">&ldquo;' + esc(a.en) + '&rdquo;</span></div>';
+    }).join('');
+
     return html`
-      <div class="card print-area" style="max-width:760px;margin:0 auto;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:10px;">
-          <h2 style="margin-bottom:0;">Task &mdash; ${esc(C.lesson.title)}</h2>
-          <button class="btn secondary small no-print" data-view="lesson">Back</button>
+      <div class="card print-area" style="max-width:780px;margin:0 auto;">
+        <div class="lesson-head">
+          <div>
+            <div class="eyebrow">Tarea</div>
+            <h2 style="margin-bottom:0;">${esc(lesson.titleEs)}</h2>
+          </div>
+          <button class="btn secondary small no-print" data-view="lesson">Volver</button>
         </div>
-        <h3>Exercises</h3>
-        ${list(task.tasks)}
-        <h3>Word bank</h3>
-        <p>${task.wordBank.map(esc).join(' &bull; ')}</p>
-        <h3>Writing</h3>
-        <p>${esc(task.writing)}</p>
-        <h3>Speaking</h3>
-        <p>${esc(task.speaking)}</p>
+        <p style="margin-top:12px;">${esc(task.introEs)}</p>
+
+        <h3>Ejercicios</h3>
+        <ul class="lesson-list">${exercises}</ul>
+
+        <h3>Banco de palabras</h3>
+        <div class="wordbank">${task.wordBank.map(function (w) { return '<span class="word">' + esc(w) + '</span>'; }).join('')}</div>
+
+        <h3>Escritura</h3>
+        <p>${esc(task.writingEs)}</p>
+
+        <h3>Práctica oral</h3>
+        <p>${esc(task.speakingEs)}</p>
+
         <div class="btn-row mt-24 no-print">
-          <button class="btn full" id="btnShowAnswers" style="background:transparent;border:2px dashed var(--divider);color:var(--text-secondary);">Show answers</button>
-          <div id="taskAnswers" style="display:none;background:var(--ok-bg);padding:12px;border-radius:8px;color:var(--ok);">
-            ${task.answers.map(function (a) { return '<div style="margin:4px 0;">' + esc(a) + '</div>'; }).join('')}
+          <button class="btn" id="btnShowAnswers" style="background:transparent;border:2px dashed var(--divider);color:var(--text-secondary);">Mostrar respuestas</button>
+          <div id="taskAnswers" class="answers-box" style="display:none;">${answers}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  // ================================================================ groups
+  function groupsView() {
+    var rows = data.groups.map(function (g) {
+      return '<div class="group-row">' +
+        '<div class="group-main">' +
+          '<div class="group-name">' + esc(g.name) + '</div>' +
+          '<div class="hint">' + g.students.length + ' alumno' + (g.students.length === 1 ? '' : 's') +
+            ' &bull; Creado ' + formatDateHuman(String(g.createdAt).slice(0, 10)) + '</div>' +
+        '</div>' +
+        '<div class="row-actions">' +
+          '<button class="btn small" data-action="groupopen" data-gid="' + esc(g.id) + '">Abrir</button>' +
+          '<button class="btn small secondary" data-action="grouprename" data-gid="' + esc(g.id) + '">Renombrar</button>' +
+          '<button class="btn small danger" data-action="groupdelete" data-gid="' + esc(g.id) + '">Eliminar</button>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+
+    return html`
+      <div style="max-width:860px;margin:0 auto;">
+        <div class="card">
+          <div class="lesson-head">
+            <div>
+              <div class="eyebrow">Organización</div>
+              <h2 style="margin-bottom:0;">Grupos</h2>
+            </div>
+            <span class="pill">${data.groups.length} grupo${data.groups.length === 1 ? '' : 's'}</span>
+          </div>
+          <p style="margin-top:10px;">Crea un grupo y agrega a tus alumnos manualmente. Después podrás marcar asistencia y tareas por día.</p>
+          <div class="inline-form">
+            <input id="newGroupName" placeholder="Nombre del grupo (ej. 1° A)" maxlength="60">
+            <button class="btn" data-action="groupcreate">Crear grupo</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3 style="margin-top:0;">Mis grupos</h3>
+          ${data.groups.length ? rows : '<div class="empty">Todavía no hay grupos. Crea el primero arriba.</div>'}
+        </div>
+      </div>
+    `;
+  }
+
+  function attDateFor(gid) { return ui.attDate[gid] || todayStr(); }
+  function hwDateFor(gid) { return ui.hwDate[gid] || todayStr(); }
+
+  function groupDetailView(gid) {
+    var group = findGroup(gid);
+    if (!group) return errorCard('El grupo no existe.');
+
+    var tab = ui.groupTab[gid] || 'attendance';
+    var isAtt = tab === 'attendance';
+    var day = isAtt ? attDateFor(gid) : hwDateFor(gid);
+    var record = recordFor(isAtt ? 'attendance' : 'homework', gid, day, false) || {};
+
+    var presentCount = group.students.filter(function (st) { return record[st.id] === true; }).length;
+
+    var studentRows = group.students.map(function (st) {
+      var stats = monthStats(gid, st.id);
+      return '<div class="student-row">' +
+        '<label class="check">' +
+          '<input type="checkbox" data-role="' + (isAtt ? 'att' : 'hw') + '" data-gid="' + esc(gid) + '" data-sid="' + esc(st.id) + '"' +
+            (record[st.id] === true ? ' checked' : '') + '>' +
+          '<span class="student-name">' + esc(st.name) + '</span>' +
+        '</label>' +
+        '<span class="hint month-hint">Este mes: ' + stats.present + ' asistencia' + (stats.present === 1 ? '' : 's') +
+          ' &bull; ' + stats.homework + ' tarea' + (stats.homework === 1 ? '' : 's') + '</span>' +
+        '<span class="row-actions">' +
+          '<button class="icon-btn" data-action="studentrename" data-gid="' + esc(gid) + '" data-sid="' + esc(st.id) + '" title="Renombrar">&#9998;</button>' +
+          '<button class="icon-btn danger" data-action="studentdelete" data-gid="' + esc(gid) + '" data-sid="' + esc(st.id) + '" title="Eliminar">&#10005;</button>' +
+        '</span>' +
+      '</div>';
+    }).join('');
+
+    var checklist = group.students.length
+      ? studentRows
+      : '<div class="empty">Primero agrega alumnos a este grupo.</div>';
+
+    return html`
+      <div style="max-width:860px;margin:0 auto;">
+        <div class="card">
+          <div class="lesson-head">
+            <div>
+              <button class="btn secondary small" data-view="groups" style="margin-bottom:8px;">&larr; Grupos</button>
+              <h2 style="margin-bottom:2px;">${esc(group.name)}</h2>
+              <div class="hint">${group.students.length} alumno${group.students.length === 1 ? '' : 's'}</div>
+            </div>
+            <span id="saveState" class="save-state">Guardado automáticamente</span>
+          </div>
+
+          <div class="inline-form" style="margin-top:16px;">
+            <input id="newStudentName" data-gid="${esc(gid)}" placeholder="Nombre del alumno" maxlength="80">
+            <button class="btn" data-action="studentadd" data-gid="${esc(gid)}">Agregar alumno</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="tabs">
+            <button class="tab ${isAtt ? 'active' : ''}" data-action="grouptab" data-gid="${esc(gid)}" data-tab="attendance">Asistencia</button>
+            <button class="tab ${!isAtt ? 'active' : ''}" data-action="grouptab" data-gid="${esc(gid)}" data-tab="homework">Tareas</button>
+          </div>
+
+          <div class="toolbar">
+            <label class="toolbar-item">Fecha
+              <input type="date" data-role="${isAtt ? 'att-date' : 'hw-date'}" data-gid="${esc(gid)}" value="${esc(day)}">
+            </label>
+            <button class="btn small" data-action="${isAtt ? 'attall' : 'hwall'}" data-gid="${esc(gid)}">
+              ${isAtt ? 'Todos presentes' : 'Todos entregaron'}
+            </button>
+            <button class="btn small secondary" data-action="${isAtt ? 'attclear' : 'hwclear'}" data-gid="${esc(gid)}">
+              Limpiar día
+            </button>
+          </div>
+
+          <div class="summary-line" id="checkSummary">
+            ${isAtt
+              ? 'Presentes: <strong>' + presentCount + '</strong> de ' + group.students.length
+              : 'Entregaron: <strong>' + presentCount + '</strong> de ' + group.students.length}
+          </div>
+
+          <div class="checklist">${checklist}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  function doGroupCreate() {
+    var input = document.getElementById('newGroupName');
+    var name = input ? input.value.trim() : '';
+    if (!name) { toast('Escribe el nombre del grupo.', true); return; }
+    data.groups.push(normalizeGroup({ name: name }));
+    saveData();
+    toast('Grupo creado');
+    navigate('groups');
+  }
+
+  function doGroupOpen(gid) {
+    var group = findGroup(gid);
+    if (!group) return;
+    if (!ui.groupTab[gid]) ui.groupTab[gid] = 'attendance';
+    navigate('group', gid);
+  }
+
+  function doGroupRename(gid) {
+    var group = findGroup(gid);
+    if (!group) return;
+    openDialog({
+      title: 'Renombrar grupo',
+      inputValue: group.name,
+      okLabel: 'Guardar',
+      onOk: function (value) {
+        group.name = value;
+        saveData();
+        toast('Grupo renombrado');
+        navigate('groups');
+      }
+    });
+  }
+
+  function doGroupDelete(gid) {
+    var group = findGroup(gid);
+    if (!group) return;
+    openDialog({
+      title: 'Eliminar grupo',
+      message: 'Se eliminará el grupo "' + group.name + '" con sus alumnos, asistencias y tareas. Esta acción no se puede deshacer.',
+      okLabel: 'Eliminar',
+      danger: true,
+      onOk: function () {
+        data.groups = data.groups.filter(function (g) { return g.id !== gid; });
+        delete data.attendance[gid];
+        delete data.homework[gid];
+        delete ui.groupTab[gid];
+        saveData();
+        toast('Grupo eliminado');
+        navigate('groups');
+      }
+    });
+  }
+
+  function doStudentAdd(gid) {
+    var group = findGroup(gid);
+    var input = document.getElementById('newStudentName');
+    var name = input ? input.value.trim() : '';
+    if (!group) return;
+    if (!name) { toast('Escribe el nombre del alumno.', true); return; }
+    group.students.push(normalizeStudent({ name: name }));
+    saveData();
+    toast('Alumno agregado');
+    navigate('group', gid);
+  }
+
+  function doStudentRename(gid, sid) {
+    var group = findGroup(gid);
+    var student = findStudent(group, sid);
+    if (!student) return;
+    openDialog({
+      title: 'Renombrar alumno',
+      inputValue: student.name,
+      okLabel: 'Guardar',
+      onOk: function (value) {
+        student.name = value;
+        saveData();
+        toast('Alumno renombrado');
+        navigate('group', gid);
+      }
+    });
+  }
+
+  function doStudentDelete(gid, sid) {
+    var group = findGroup(gid);
+    var student = findStudent(group, sid);
+    if (!student) return;
+    openDialog({
+      title: 'Eliminar alumno',
+      message: 'Se eliminará a "' + student.name + '" y sus registros de asistencia y tareas.',
+      okLabel: 'Eliminar',
+      danger: true,
+      onOk: function () {
+        group.students = group.students.filter(function (s) { return s.id !== sid; });
+        ['attendance', 'homework'].forEach(function (kind) {
+          var root = data[kind][gid] || {};
+          Object.keys(root).forEach(function (day) {
+            if (root[day] && hasOwn(root[day], sid)) delete root[day][sid];
+            if (root[day] && !Object.keys(root[day]).length) delete root[day];
+          });
+          if (!Object.keys(root).length) delete data[kind][gid];
+        });
+        saveData();
+        toast('Alumno eliminado');
+        navigate('group', gid);
+      }
+    });
+  }
+
+  function doGroupTab(gid, tab) {
+    ui.groupTab[gid] = tab;
+    navigate('group', gid);
+  }
+
+  function updateSummaryLine(gid) {
+    var group = findGroup(gid);
+    var el = document.getElementById('checkSummary');
+    if (!group || !el) return;
+    var isAtt = (ui.groupTab[gid] || 'attendance') === 'attendance';
+    var day = isAtt ? attDateFor(gid) : hwDateFor(gid);
+    var record = recordFor(isAtt ? 'attendance' : 'homework', gid, day, false) || {};
+    var count = group.students.filter(function (st) { return record[st.id] === true; }).length;
+    el.innerHTML = (isAtt ? 'Presentes: <strong>' : 'Entregaron: <strong>') + count + '</strong> de ' + group.students.length;
+  }
+
+  function doToggleRecord(cb) {
+    var role = cb.getAttribute('data-role');
+    var gid = cb.getAttribute('data-gid');
+    var sid = cb.getAttribute('data-sid');
+    if (!gid || !sid) return;
+    var isAtt = role === 'att';
+    var day = isAtt ? attDateFor(gid) : hwDateFor(gid);
+    var record = recordFor(isAtt ? 'attendance' : 'homework', gid, day, true);
+    record[sid] = !!cb.checked;
+    saveData();
+    updateSummaryLine(gid);
+  }
+
+  function doSetAll(gid, kind, value) {
+    var group = findGroup(gid);
+    if (!group) return;
+    var day = kind === 'attendance' ? attDateFor(gid) : hwDateFor(gid);
+    if (value) {
+      var record = recordFor(kind, gid, day, true);
+      group.students.forEach(function (st) { record[st.id] = true; });
+    } else {
+      var root = data[kind][gid];
+      if (root && root[day]) delete root[day];
+    }
+    saveData();
+    navigate('group', gid);
+  }
+
+  // ================================================================ reports
+  function reportPeriod() {
+    return ui.report.mode === 'day' ? ui.report.day : ui.report.month;
+  }
+  function reportKey() {
+    return [ui.report.groupId || 'all', ui.report.mode, reportPeriod()].join('|');
+  }
+
+  function buildReport(opts) {
+    var groups = opts.groupId ? [findGroup(opts.groupId)] : data.groups.slice();
+    groups = groups.filter(Boolean);
+
+    var days = [];
+    if (opts.mode === 'day') {
+      days = [opts.period];
+    } else {
+      var year = +opts.period.slice(0, 4);
+      var month = +opts.period.slice(5, 7);
+      var totalDays = new Date(year, month, 0).getDate();
+      for (var d = 1; d <= totalDays; d++) days.push(opts.period + '-' + pad(d));
+    }
+
+    var resumen = [['Grupo', 'Alumno', 'Días con asistencia', 'Asistencias', 'Faltas', '% Asistencia', 'Tareas entregadas', 'Tareas pendientes', '% Tareas']];
+    var asistencia = [['Fecha', 'Grupo', 'Alumno', 'Estado']];
+    var tareas = [['Fecha', 'Grupo', 'Alumno', 'Estado']];
+    var fechas = [['Fecha', 'Grupo', 'Asistencia guardada', 'Tareas guardadas', 'Presentes', 'Entregaron']];
+    var totals = { present: 0, absent: 0, hwDone: 0, hwPending: 0, students: 0, groups: groups.length, records: 0 };
+    var summary = [];
+
+    groups.forEach(function (group) {
+      var perStudent = {};
+      group.students.forEach(function (st) {
+        perStudent[st.id] = { attDays: 0, present: 0, absent: 0, hwDays: 0, hwDone: 0, hwPending: 0 };
+        totals.students++;
+      });
+
+      days.forEach(function (day) {
+        var attRec = data.attendance[group.id] && data.attendance[group.id][day];
+        var hwRec = data.homework[group.id] && data.homework[group.id][day];
+        if (!attRec && !hwRec) {
+          if (opts.mode === 'month') return;
+        } else {
+          totals.records++;
+        }
+
+        var presentCount = 0, hwCount = 0;
+
+        group.students.forEach(function (st) {
+          var attKnown = hasOwn(attRec, st.id);
+          var hwKnown = hasOwn(hwRec, st.id);
+
+          var attState = attKnown ? (attRec[st.id] === true ? 'Presente' : 'Ausente') : 'Sin registro';
+          var hwState = hwKnown ? (hwRec[st.id] === true ? 'Entregó' : 'Pendiente') : 'Sin registro';
+
+          asistencia.push([day, group.name, st.name, attState]);
+          tareas.push([day, group.name, st.name, hwState]);
+
+          var ps = perStudent[st.id];
+          if (attKnown) {
+            ps.attDays++;
+            if (attRec[st.id] === true) { ps.present++; presentCount++; totals.present++; }
+            else { ps.absent++; totals.absent++; }
+          }
+          if (hwKnown) {
+            ps.hwDays++;
+            if (hwRec[st.id] === true) { ps.hwDone++; hwCount++; totals.hwDone++; }
+            else { ps.hwPending++; totals.hwPending++; }
+          }
+        });
+
+        fechas.push([day, group.name, attRec ? 'Sí' : 'No', hwRec ? 'Sí' : 'No', presentCount, hwCount]);
+      });
+
+      group.students.forEach(function (st) {
+        var ps = perStudent[st.id];
+        var attPct = ps.attDays ? Math.round((ps.present / ps.attDays) * 100) : '';
+        var hwPct = ps.hwDays ? Math.round((ps.hwDone / ps.hwDays) * 100) : '';
+        resumen.push([group.name, st.name, ps.attDays, ps.present, ps.absent, attPct, ps.hwDone, ps.hwPending, hwPct]);
+        summary.push({
+          group: group.name, student: st.name,
+          attDays: ps.attDays, present: ps.present, absent: ps.absent, attPct: attPct,
+          hwDone: ps.hwDone, hwPending: ps.hwPending, hwPct: hwPct
+        });
+      });
+    });
+
+    return {
+      key: reportKey(),
+      resumen: resumen,
+      asistencia: asistencia,
+      tareas: tareas,
+      fechas: fechas,
+      summary: summary,
+      totals: totals
+    };
+  }
+
+  function reportPreviewHtml(report) {
+    if (!report.totals.students) {
+      return '<div class="empty">No hay alumnos en los grupos seleccionados.</div>';
+    }
+    if (!report.totals.records) {
+      return '<div class="empty">No hay registros de asistencia ni tareas en este periodo.</div>';
+    }
+
+    var rows = report.summary.map(function (r) {
+      return '<tr>' +
+        '<td>' + esc(r.group) + '</td>' +
+        '<td>' + esc(r.student) + '</td>' +
+        '<td>' + r.attDays + '</td>' +
+        '<td>' + r.present + '</td>' +
+        '<td>' + r.absent + '</td>' +
+        '<td>' + (r.attPct === '' ? '-' : r.attPct + '%') + '</td>' +
+        '<td>' + r.hwDone + '</td>' +
+        '<td>' + r.hwPending + '</td>' +
+        '<td>' + (r.hwPct === '' ? '-' : r.hwPct + '%') + '</td>' +
+      '</tr>';
+    }).join('');
+
+    return '<div class="stats">' +
+        '<div class="stat"><div class="stat-num">' + report.totals.present + '</div><div class="stat-label">Asistencias</div></div>' +
+        '<div class="stat"><div class="stat-num">' + report.totals.absent + '</div><div class="stat-label">Faltas</div></div>' +
+        '<div class="stat"><div class="stat-num">' + report.totals.hwDone + '</div><div class="stat-label">Tareas entregadas</div></div>' +
+        '<div class="stat"><div class="stat-num">' + report.totals.hwPending + '</div><div class="stat-label">Tareas pendientes</div></div>' +
+      '</div>' +
+      '<div class="table-wrap"><table class="table">' +
+        '<thead><tr><th>Grupo</th><th>Alumno</th><th>Días</th><th>Asist.</th><th>Faltas</th><th>% Asist.</th><th>Tareas</th><th>Pend.</th><th>% Tareas</th></tr></thead>' +
+        '<tbody>' + rows + '</tbody>' +
+      '</table></div>';
+  }
+
+  function reportsView() {
+    var opts = data.groups.map(function (g) {
+      return '<option value="' + esc(g.id) + '"' + (ui.report.groupId === g.id ? ' selected' : '') + '>' + esc(g.name) + '</option>';
+    }).join('');
+
+    var isDay = ui.report.mode === 'day';
+    var preview = (lastReport && lastReport.key === reportKey()) ? reportPreviewHtml(lastReport) : '';
+
+    return html`
+      <div style="max-width:940px;margin:0 auto;">
+        <div class="card">
+          <div class="lesson-head">
+            <div>
+              <div class="eyebrow">Reportes</div>
+              <h2 style="margin-bottom:0;">Asistencias y tareas en Excel</h2>
+            </div>
+            <span class="pill">.xlsx</span>
+          </div>
+          <p style="margin-top:10px;">Elige un grupo (o todos) y el periodo. Se generará un archivo con hojas de <strong>Resumen</strong>, <strong>Asistencia</strong>, <strong>Tareas</strong> y <strong>Fechas</strong>.</p>
+
+          ${data.groups.length ? html`
+            <div class="report-controls">
+              <label class="toolbar-item">Grupo
+                <select id="repGroup">
+                  <option value="">Todos los grupos</option>
+                  ${opts}
+                </select>
+              </label>
+
+              <label class="toolbar-item">Periodo
+                <select id="repMode">
+                  <option value="day" ${isDay ? 'selected' : ''}>Por día</option>
+                  <option value="month" ${!isDay ? 'selected' : ''}>Por mes</option>
+                </select>
+              </label>
+
+              ${isDay
+                ? '<label class="toolbar-item">Día <input type="date" id="repDay" value="' + esc(ui.report.day) + '"></label>'
+                : '<label class="toolbar-item">Mes <input type="month" id="repMonth" value="' + esc(ui.report.month) + '"></label>'}
+            </div>
+
+            <div class="btn-row" style="margin-top:16px;">
+              <button class="btn" data-action="reportpreview">Ver resumen</button>
+              <button class="btn success" data-action="reportexcel">Descargar Excel</button>
+            </div>
+          ` : '<div class="empty">Primero crea un grupo y agrega alumnos. <button class="btn small" data-view="groups" style="margin-left:8px;">Ir a Grupos</button></div>'}
+        </div>
+
+        ${preview ? '<div class="card"><h3 style="margin-top:0;">Vista previa</h3>' + preview + '</div>' : ''}
+
+        <div class="card">
+          <h3 style="margin-top:0;">Respaldo de datos</h3>
+          <p>Los datos se guardan en tu Mac. Puedes exportar un respaldo y restaurarlo cuando quieras; agregar lecciones nuevas no borra la información.</p>
+          <div class="btn-row">
+            <button class="btn secondary" data-action="backup">Exportar respaldo (JSON)</button>
+            <button class="btn secondary" data-action="restore">Restaurar respaldo</button>
+            <button class="btn secondary" data-action="opendatadir">Abrir carpeta de datos</button>
           </div>
         </div>
       </div>
     `;
   }
 
-  on(document, 'click', '#btnShowAnswers', function () {
-    var box = document.getElementById('taskAnswers');
-    var btn = document.getElementById('btnShowAnswers');
-    if (box) box.style.display = 'block';
-    if (btn) btn.style.display = 'none';
-  });
+  function doReportPreview() {
+    if (!data.groups.length) { toast('Primero crea un grupo.', true); return; }
+    lastReport = buildReport({
+      groupId: ui.report.groupId,
+      mode: ui.report.mode,
+      period: reportPeriod()
+    });
+    navigate('reports');
+  }
 
-  // ---------------------------------------------------------------- print
+  async function doReportExcel() {
+    if (!data.groups.length) { toast('Primero crea un grupo.', true); return; }
+    var report = buildReport({
+      groupId: ui.report.groupId,
+      mode: ui.report.mode,
+      period: reportPeriod()
+    });
+    lastReport = report;
+
+    var groupName = ui.report.groupId ? (findGroup(ui.report.groupId) || {}).name : 'Todos_los_grupos';
+    var filename = 'Reporte_' + safeFile(groupName) + '_' + reportPeriod() + '.xlsx';
+
+    try {
+      var path = await api.exportXLSX(filename, [
+        { name: 'Resumen', data: report.resumen },
+        { name: 'Asistencia', data: report.asistencia },
+        { name: 'Tareas', data: report.tareas },
+        { name: 'Fechas', data: report.fechas }
+      ]);
+      if (path) {
+        toast('Excel generado');
+        window.alert('Reporte guardado en:\n' + path);
+      } else {
+        toast('Exportación cancelada');
+      }
+    } catch (err) {
+      toast('No se pudo generar el Excel: ' + ((err && err.message) || err), true);
+    }
+    navigate('reports');
+  }
+
+  async function doBackup() {
+    try {
+      var filename = 'EnglishGrowth_Respaldo_' + todayStr() + '.json';
+      var path = await api.saveFile(filename, 'application/json', JSON.stringify(data, null, 2));
+      if (path) toast('Respaldo guardado');
+      else toast('Respaldo cancelado');
+    } catch (err) {
+      toast('No se pudo guardar el respaldo: ' + ((err && err.message) || err), true);
+    }
+  }
+
+  async function doRestore() {
+    try {
+      var text = await api.openFile();
+      if (!text) { toast('La restauración solo está disponible en la app instalada.'); return; }
+      var parsed;
+      try { parsed = JSON.parse(text); }
+      catch (e) { toast('El archivo no es un respaldo válido.', true); return; }
+      openDialog({
+        title: 'Restaurar respaldo',
+        message: 'Se reemplazarán los grupos, alumnos, asistencias y tareas actuales por los del respaldo. ¿Continuar?',
+        okLabel: 'Restaurar',
+        danger: true,
+        onOk: async function () {
+          data = normalizeData(parsed);
+          await saveData(true);
+          lastReport = null;
+          toast('Respaldo restaurado');
+          navigate('groups');
+        }
+      });
+    } catch (err) {
+      toast('No se pudo restaurar: ' + ((err && err.message) || err), true);
+    }
+  }
+
+  async function doOpenDataDir() {
+    var p = await api.openDataDir();
+    if (!p) toast('Solo disponible en la app instalada.');
+  }
+
+  // ================================================================ print
   async function printView() {
-    var lesson = C.lesson;
+    var lesson = EG.getLesson(activeLessonId);
     var doc = html`
       <div>
-        <h2 style="border-bottom:2px solid #0E7C86;padding-bottom:6px;">English Growth &mdash; Lesson</h2>
-        <div style="font-size:0.9rem;color:#555;margin-bottom:16px;">${esc(lesson.title)}</div>
-        <h3>${esc(lesson.title)}</h3>
-        <ul>${lesson.examples.map(function (e) { return '<li>' + esc(e) + '</li>'; }).join('')}</ul>
-        <h3>Task</h3>
-        <ul>${C.task.tasks.map(function (t) { return '<li>' + esc(t) + '</li>'; }).join('')}</ul>
+        <h2 style="border-bottom:2px solid #0E7C86;padding-bottom:6px;">English Growth - ${esc(lesson.titleEs)}</h2>
+        <p style="color:#555;margin:0 0 14px;">${esc(lesson.titleEn)}</p>
+        <p><strong>En español:</strong> ${esc(lesson.introEs)}</p>
+        <h3>Lo que vas a aprender</h3>
+        <ul>${lesson.points.map(function (p) { return '<li>' + esc(p.es) + (p.en ? ' <strong>"' + esc(p.en) + '"</strong>' : '') + '</li>'; }).join('')}</ul>
+        <h3>Ejemplos</h3>
+        <ul>${lesson.examples.map(function (e) { return '<li>' + esc(e.es) + ' <strong>"' + esc(e.en) + '"</strong></li>'; }).join('')}</ul>
+        <h3>Tarea</h3>
+        <ul>${lesson.task.exercises.map(function (t) { return '<li>' + esc(t.es) + (t.en ? ' <strong>"' + esc(t.en) + '"</strong>' : '') + '</li>'; }).join('')}</ul>
       </div>
     `;
     try {
-      var pdfPath = await api.printPDF(doc, 'EnglishGrowth_Lesson_Asking_the_Time.pdf');
-      if (pdfPath) alert('PDF saved to:\n' + pdfPath);
-      else alert('Printing is available only in the installed app.');
-    } catch (e) {
-      alert('Could not create the PDF: ' + ((e && e.message) || e));
+      var pdfPath = await api.printPDF(doc, 'EnglishGrowth_' + safeFile(lesson.titleEs) + '.pdf');
+      if (pdfPath) window.alert('PDF guardado en:\n' + pdfPath);
+      else window.alert('La impresión está disponible solo en la app instalada.');
+    } catch (err) {
+      window.alert('No se pudo crear el PDF: ' + ((err && err.message) || err));
     }
-    navigate(lessonView);
+    navigate('lesson');
   }
 
-  // ---------------------------------------------------------------- boot
-  if (!C || !C.lesson) {
-    container.innerHTML = errorCard('Content could not be loaded (content.js).');
+  // ================================================================ events
+  document.addEventListener('click', function (e) {
+    var viewBtn = e.target.closest ? e.target.closest('[data-view]') : null;
+    if (viewBtn) {
+      var view = viewBtn.getAttribute('data-view');
+      if (views[view]) navigate(view);
+      return;
+    }
+
+    var actionBtn = e.target.closest ? e.target.closest('[data-action]') : null;
+    if (!actionBtn) return;
+    var action = actionBtn.getAttribute('data-action');
+    var gid = actionBtn.getAttribute('data-gid');
+    var sid = actionBtn.getAttribute('data-sid');
+
+    if (action === 'login') doLogin(actionBtn.closest('.view') || container);
+    else if (action === 'groupcreate') doGroupCreate();
+    else if (action === 'groupopen') doGroupOpen(gid);
+    else if (action === 'grouprename') doGroupRename(gid);
+    else if (action === 'groupdelete') doGroupDelete(gid);
+    else if (action === 'studentadd') doStudentAdd(gid);
+    else if (action === 'studentrename') doStudentRename(gid, sid);
+    else if (action === 'studentdelete') doStudentDelete(gid, sid);
+    else if (action === 'grouptab') doGroupTab(gid, actionBtn.getAttribute('data-tab'));
+    else if (action === 'attall') doSetAll(gid, 'attendance', true);
+    else if (action === 'attclear') doSetAll(gid, 'attendance', false);
+    else if (action === 'hwall') doSetAll(gid, 'homework', true);
+    else if (action === 'hwclear') doSetAll(gid, 'homework', false);
+    else if (action === 'reportpreview') doReportPreview();
+    else if (action === 'reportexcel') doReportExcel();
+    else if (action === 'backup') doBackup();
+    else if (action === 'restore') doRestore();
+    else if (action === 'opendatadir') doOpenDataDir();
+  });
+
+  document.addEventListener('change', function (e) {
+    var el = e.target;
+    if (!el) return;
+
+    if (el.type === 'checkbox' && (el.getAttribute('data-role') === 'att' || el.getAttribute('data-role') === 'hw')) {
+      doToggleRecord(el);
+      return;
+    }
+
+    if (el.getAttribute('data-role') === 'att-date') {
+      ui.attDate[el.getAttribute('data-gid')] = el.value;
+      navigate('group', el.getAttribute('data-gid'));
+      return;
+    }
+    if (el.getAttribute('data-role') === 'hw-date') {
+      ui.hwDate[el.getAttribute('data-gid')] = el.value;
+      navigate('group', el.getAttribute('data-gid'));
+      return;
+    }
+
+    if (el.id === 'repGroup') { ui.report.groupId = el.value; lastReport = null; navigate('reports'); return; }
+    if (el.id === 'repMode') { ui.report.mode = el.value; lastReport = null; navigate('reports'); return; }
+    if (el.id === 'repDay') { ui.report.day = el.value || todayStr(); lastReport = null; return; }
+    if (el.id === 'repMonth') { ui.report.month = el.value || monthStr(); lastReport = null; return; }
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { closeDialog(); return; }
+    if (e.key !== 'Enter' || !e.target) return;
+    if (e.target.id === 'newGroupName') { e.preventDefault(); doGroupCreate(); }
+    else if (e.target.id === 'newStudentName') {
+      e.preventDefault();
+      doStudentAdd(e.target.getAttribute('data-gid'));
+    } else if (e.target.id === 'loginPass') {
+      e.preventDefault();
+      var signIn = document.querySelector('[data-action="login"]');
+      if (signIn) signIn.click();
+    }
+  });
+
+  document.addEventListener('click', function (e) {
+    var showAnswers = e.target.closest ? e.target.closest('#btnShowAnswers') : null;
+    if (showAnswers) {
+      var box = document.getElementById('taskAnswers');
+      if (box) box.style.display = 'block';
+      showAnswers.style.display = 'none';
+    }
+  });
+
+  if (signOutBtn) signOutBtn.addEventListener('click', doSignOut);
+
+  // ================================================================ boot
+  views = {
+    login: loginView,
+    lesson: lessonView,
+    test: testView,
+    task: taskView,
+    groups: groupsView,
+    group: groupDetailView,
+    reports: reportsView,
+    print: printView
+  };
+
+  // Hook de diagnóstico (solo se usa desde el navegador de pruebas).
+  window.__EG_DEBUG__ = {
+    buildReport: buildReport,
+    getData: function () { return data; },
+    setReport: function (opts) {
+      if (opts.groupId !== undefined) ui.report.groupId = opts.groupId;
+      if (opts.mode !== undefined) ui.report.mode = opts.mode;
+      if (opts.day !== undefined) ui.report.day = opts.day;
+      if (opts.month !== undefined) ui.report.month = opts.month;
+    },
+    navigate: navigate
+  };
+
+  if (!EG || !EG.lessons || !EG.lessons.length) {
+    container.innerHTML = errorCard('No se pudo cargar el contenido (content.js).');
     window.__EG_BOOTED__ = true;
     return;
   }
 
-  navigate(loginView);
+  data = normalizeData(null);
+  showShell(false);
+  navigate('login');
   window.__EG_BOOTED__ = true;
 })();
 </script>
 <script>
-// Red de seguridad: si el script principal fallara al compilar/ejecutar,
-// mostramos un mensaje visible en lugar de dejar solo el header.
+// Red de seguridad: si el script principal no arrancara, mostrar el error en pantalla.
 (function () {
   window.addEventListener('error', function (e) {
     window.__EG_LAST_ERROR__ = e.message || String(e.error || 'script error');
@@ -457,12 +1414,10 @@
     if (!c) return;
     c.innerHTML =
       '<div class="card" style="max-width:680px;margin:40px auto;border-left:4px solid #d32f2f;">' +
-      '<h2 style="color:#d32f2f;">Startup error (v1.0.1)</h2>' +
-      '<p>The interface could not start. This is usually a script error.</p>' +
-      '<pre style="white-space:pre-wrap;font-size:12px;background:#f7f7f7;padding:10px;border-radius:8px;">' +
-      (window.__EG_LAST_ERROR__ || 'No details available.') +
-      '</pre>' +
-      '<button class="btn" onclick="location.reload()">Retry</button>' +
+      '<h2 style="color:#d32f2f;">Error al iniciar (v1.1.0)</h2>' +
+      '<p>La interfaz no pudo iniciar. Suele ser un error de script.</p>' +
+      '<pre class="error-pre">' + (window.__EG_LAST_ERROR__ || 'Sin detalles disponibles.') + '</pre>' +
+      '<button class="btn" onclick="location.reload()">Reintentar</button>' +
       '</div>';
   }, 900);
 })();

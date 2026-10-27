@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const Store = require('electron-store');
@@ -52,7 +52,15 @@ ipcMain.handle('export:xlsx', async (_, { filename, sheets }) => {
   const wb = XLSX.utils.book_new();
   for (const sheet of sheets) {
     const ws = XLSX.utils.aoa_to_sheet(sheet.data);
-    XLSX.utils.book_append_sheet(wb, ws, sheet.name);
+    ws['!cols'] = (sheet.data[0] || []).map((_, col) => {
+      let max = 10;
+      for (const row of sheet.data) {
+        const len = String(row[col] === undefined || row[col] === null ? '' : row[col]).length;
+        if (len > max) max = len;
+      }
+      return { wch: Math.min(max + 2, 40) };
+    });
+    XLSX.utils.book_append_sheet(wb, ws, String(sheet.name).slice(0, 31));
   }
   const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
   const result = await dialog.showSaveDialog({
@@ -62,6 +70,13 @@ ipcMain.handle('export:xlsx', async (_, { filename, sheets }) => {
   if (result.canceled) return null;
   fs.writeFileSync(result.filePath, Buffer.from(buf));
   return result.filePath;
+});
+
+// ---------- IPC: carpeta de datos (respaldo manual de la base) ----------
+ipcMain.handle('app:openDataDir', async () => {
+  const dir = app.getPath('userData');
+  const error = await shell.openPath(dir);
+  return error ? null : dir;
 });
 
 // ---------- IPC: print to PDF ----------

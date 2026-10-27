@@ -1,108 +1,135 @@
-// English Growth - contenido (una sola leccion: pedir y responder la hora)
-// IMPORTANTE: todo va dentro de un IIFE para NO crear variables globales
-// que choquen con las del script de index.html.
+// English Growth - contenido de lecciones
+// Todo va dentro de un IIFE: no se crean variables globales que puedan chocar.
+// Para agregar una leccion nueva en el futuro, agrega otro objeto al arreglo LESSONS.
+// Los registros de alumnos/asistencia/tareas se guardan aparte y NO dependen de este archivo.
 (function () {
   'use strict';
 
-  var CONTENT = {
-    appName: 'English Growth',
-    version: '1.0.1',
-
-    lesson: {
-      title: "Unit 1 - Asking the Time",
-      es: 'Aprende a preguntar la hora y a responder en ingles: "What time is it?" - "It is three o\'clock."',
-      points: [
-        'To ask the time: "What time is it?"',
-        'To answer: "It is three o\'clock."',
-        'Use "o\'clock" only for exact hours (one to twelve).',
-        'With minutes, do not use "o\'clock": "It is three fifteen."',
-        'You can add "a.m." or "p.m.": "It is three p.m."',
-      ],
-      examples: [
-        'A: "What time is it?"  B: "It is three o\'clock."',
-        'A: "Excuse me, what time is it?"  B: "It is eight o\'clock."',
-        'A: "What time is it?"  B: "It is twelve o\'clock."',
-        'A: "What time is it?"  B: "It is three fifteen."',
-      ],
-      vocab: ["time", "clock", "hour", "o'clock", "a.m.", "p.m.", "What time is it?", "It is ..."],
-      mistakes: [
-        'Do not say "It is three hours" to tell the time. Say "It is three o\'clock."',
-        'Do not forget the apostrophe in "o\'clock".',
-        'Do not use "o\'clock" with minutes: say "three fifteen", not "three fifteen o\'clock".',
-        'Do not ask "How much is it?" for the time. Ask "What time is it?"',
-      ],
-    },
-
-    questions: [
-      {
-        q: 'How do you ask for the time?',
-        a: ['What time is it?', 'What is your name?', 'Where are you from?', 'How old are you?'],
-        correct: 0,
-      },
-      {
-        q: 'It is 3:00. How do you answer "What time is it?"',
-        a: ["It is three o'clock.", 'It is three hours.', 'It is three fifteen.', 'It is three days.'],
-        correct: 0,
-      },
-      {
-        q: 'When do you use "o\'clock"?',
-        a: ['Only for exact hours.', 'For minutes.', 'For days.', 'For prices.'],
-        correct: 0,
-      },
-      {
-        q: 'How do you say 8:00?',
-        a: ["It is eight o'clock.", 'It is eight hours.', 'It is eight thirty.', 'It is eight days.'],
-        correct: 0,
-      },
-      {
-        q: 'Which sentence is correct?',
-        a: ["It is twelve o'clock.", 'It is twelve hours.', "It is twelve o'clock thirty.", 'It is twelve minutes.'],
-        correct: 0,
-      },
-    ],
-
-    task: {
-      tasks: [
-        'Exercise 1: Complete the question: "_____ time is it?"',
-        'Exercise 2: Answer for 3:00, 8:00 and 12:00 using "It is ___ o\'clock."',
-        'Exercise 3: Write a short dialogue (4 lines) asking and answering the time.',
-      ],
-      wordBank: [
-        'What time is it?',
-        'It is one o\'clock.',
-        'It is two o\'clock.',
-        'It is three o\'clock.',
-        'It is eight o\'clock.',
-        'It is twelve o\'clock.',
-      ],
-      writing: 'Write a 4-line dialogue between a teacher and a student about the time.',
-      speaking: 'Practice with a partner: ask "What time is it?" and answer with "It is ___ o\'clock."',
-      answers: [
-        'Exercise 1: What',
-        'Exercise 2: It is three o\'clock. / It is eight o\'clock. / It is twelve o\'clock.',
-        'Exercise 3: A: What time is it?  B: It is three o\'clock.  A: Thank you.  B: You are welcome.',
-      ],
-    },
+  var APP = {
+    name: 'English Growth',
+    version: '1.1.0',
+    schemaVersion: 2,
   };
 
+  var LESSONS = [
+    {
+      id: 'unit1-time',
+      unit: 1,
+      titleEs: 'Unidad 1 - Pedir la hora',
+      titleEn: 'Asking the Time',
+      objectiveEs: 'Al terminar, podras preguntar la hora y responder en ingles.',
+      introEs:
+        'Para pedir la hora decimos: "What time is it?" y para responder: "It is three o\'clock." ' +
+        'En esta leccion practicaras esas dos frases y veras cuando se usa "o\'clock".',
+      points: [
+        { es: 'Para preguntar la hora decimos:', en: 'What time is it?' },
+        { es: 'Para responder decimos:', en: "It is three o'clock." },
+        { es: 'Usamos "o\'clock" solamente con horas exactas (de la 1 a las 12).', en: null },
+        { es: 'Si hay minutos, no usamos "o\'clock":', en: 'It is three fifteen.' },
+        { es: 'Para aclarar si es de manana o de tarde/noche:', en: 'It is three p.m.' },
+      ],
+      examples: [
+        { es: 'Preguntar la hora:', en: 'What time is it?' },
+        { es: 'Responder a las 3:00:', en: "It is three o'clock." },
+        { es: 'Preguntar con educacion:', en: 'Excuse me, what time is it?' },
+        { es: 'Responder con minutos (3:15):', en: 'It is three fifteen.' },
+      ],
+      vocab: [
+        { en: 'time', es: 'hora / tiempo', phonEn: 'taim' },
+        { en: 'clock', es: 'reloj', phonEn: 'klok' },
+        { en: "o'clock", es: 'en punto', phonEn: "'oclok" },
+        { en: 'hour', es: 'hora (duracion)', phonEn: 'aur' },
+        { en: 'a.m.', es: 'de la manana (00:00 a 11:59)', phonEn: 'ei em' },
+        { en: 'p.m.', es: 'de la tarde/noche (12:00 a 23:59)', phonEn: 'pi em' },
+      ],
+      mistakes: [
+        { es: 'No uses "hours" para dar la hora. Lo correcto es:', en: "It is three o'clock." },
+        { es: 'No olvides el apostrofo en "o\'clock".', en: null },
+        { es: 'No uses "o\'clock" con minutos. Lo correcto es:', en: 'It is three fifteen.' },
+        { es: 'No preguntes "How much is it?" para la hora. Lo correcto es:', en: 'What time is it?' },
+      ],
+      questions: [
+        {
+          q: 'Como pides la hora en ingles?',
+          a: ['What time is it?', 'What is your name?', 'Where are you from?', 'How old are you?'],
+          correct: 0,
+        },
+        {
+          q: 'Son las 3:00. Como respondes?',
+          a: ["It is three o'clock.", 'It is three hours.', 'It is three fifteen.', 'It is three days.'],
+          correct: 0,
+        },
+        {
+          q: 'Cuando se usa "o\'clock"?',
+          a: ['Solo con horas exactas.', 'Con minutos.', 'Con dias.', 'Con precios.'],
+          correct: 0,
+        },
+        {
+          q: 'Como se dice 8:00?',
+          a: ["It is eight o'clock.", 'It is eight hours.', 'It is eight thirty.', 'It is eight days.'],
+          correct: 0,
+        },
+        {
+          q: 'Cual oracion es correcta?',
+          a: ["It is twelve o'clock.", 'It is twelve hours.', "It is twelve o'clock thirty.", 'It is twelve minutes.'],
+          correct: 0,
+        },
+      ],
+      task: {
+        introEs: 'Resuelve los ejercicios. Puedes escribir tus respuestas en tu cuaderno.',
+        exercises: [
+          { es: 'Ejercicio 1: completa la pregunta:', en: '_____ time is it?' },
+          { es: 'Ejercicio 2: escribe la respuesta para 3:00, 8:00 y 12:00 usando:', en: "It is ___ o'clock." },
+          { es: 'Ejercicio 3: escribe un dialogo corto (4 lineas) preguntando y respondiendo la hora.', en: null },
+        ],
+        wordBank: [
+          'What time is it?',
+          "It is one o'clock.",
+          "It is two o'clock.",
+          "It is three o'clock.",
+          "It is eight o'clock.",
+          "It is twelve o'clock.",
+        ],
+        writingEs: 'Escribe un dialogo de 4 lineas entre un profesor y un alumno sobre la hora.',
+        speakingEs: 'Practica con un companero: pregunta "What time is it?" y responde "It is ___ o\'clock."',
+        answers: [
+          { es: 'Ejercicio 1:', en: 'What' },
+          { es: 'Ejercicio 2:', en: "It is three o'clock. / It is eight o'clock. / It is twelve o'clock." },
+          {
+            es: 'Ejercicio 3 (ejemplo):',
+            en: 'A: What time is it? / B: It is three o\'clock. / A: Thank you. / B: You are welcome.',
+          },
+        ],
+      },
+    },
+  ];
+
+  function getLesson(lessonId) {
+    if (!lessonId) return LESSONS[0];
+    for (var i = 0; i < LESSONS.length; i++) {
+      if (LESSONS[i].id === lessonId) return LESSONS[i];
+    }
+    return LESSONS[0];
+  }
+
   // Devuelve una copia de las preguntas con las opciones rotadas (determinista).
-  function getQuestions() {
-    var qs = (CONTENT.questions || []).slice();
+  function getQuestions(lessonId) {
+    var lesson = getLesson(lessonId);
+    var qs = (lesson.questions || []).slice();
     return qs.map(function (q, i) {
       var opts = (q.a || []).slice();
+      if (!opts.length) return { q: q.q, a: [], correct: 0 };
       var shift = (q.q.length + i) % opts.length;
       var rotated = [];
-      var k;
-      for (k = 0; k < opts.length; k++) rotated.push(opts[(k + shift) % opts.length]);
-      return {
-        q: q.q,
-        a: rotated,
-        correct: rotated.indexOf(q.a[q.correct]),
-      };
+      for (var k = 0; k < opts.length; k++) rotated.push(opts[(k + shift) % opts.length]);
+      return { q: q.q, a: rotated, correct: rotated.indexOf(q.a[q.correct]) };
     });
   }
 
-  // Solo se exponen dos propiedades, sin declarar const/let globales.
-  window.CONTENT = CONTENT;
-  window.getQuestions = getQuestions;
+  window.EG_CONTENT = {
+    app: APP,
+    lessons: LESSONS,
+    getLesson: getLesson,
+    getQuestions: getQuestions,
+  };
 })();
