@@ -26,7 +26,7 @@ function createWindow() {
     },
   });
 
-  win.loadFile('index.html');
+  win.loadFile(path.join(__dirname, 'index.html'));
 }
 
 app.whenReady().then(() => {
@@ -66,15 +66,26 @@ ipcMain.handle('export:xlsx', async (_, { filename, sheets }) => {
 
 // ---------- IPC: print to PDF ----------
 ipcMain.handle('print:pdf', async (_, { html, filename = 'document.pdf' }) => {
-  const { webContents } = BrowserWindow.getFocusedWindow();
-  const pdfPath = path.join(app.getPath('documents'), filename);
-  const buffer = await webContents.printToPDF({
-    printBackground: true,
-    margin: { top: 20, bottom: 20, left: 20, right: 20 },
-    pageSize: 'A4',
+  const printWin = new BrowserWindow({
+    show: false,
+    width: 900,
+    height: 1200,
+    webPreferences: { contextIsolation: true, nodeIntegration: false },
   });
-  fs.writeFileSync(pdfPath, buffer);
-  return pdfPath;
+  try {
+    const doc = '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+      '<style>body{font-family:-apple-system,Helvetica,Arial,sans-serif;padding:24px;color:#111;}' +
+      'h2{color:#0E7C86;} h3{margin-top:18px;} li{margin:5px 0;}</style></head><body>' +
+      (html || '') + '</body></html>';
+    await printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(doc));
+    const buffer = await printWin.webContents.printToPDF({ printBackground: true, pageSize: 'A4' });
+    const safeName = String(filename).replace(/[\\/:*?"<>|]/g, '_');
+    const pdfPath = path.join(app.getPath('documents'), safeName);
+    fs.writeFileSync(pdfPath, buffer);
+    return pdfPath;
+  } finally {
+    if (!printWin.isDestroyed()) printWin.destroy();
+  }
 });
 
 // ---------- IPC: save file (json/backup) ----------

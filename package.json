@@ -1,7 +1,7 @@
 {
   "name": "english-growth",
   "productName": "English Growth",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "English learning app for teachers - groups, lessons, tests, progress, export & print",
   "main": "main.js",
   "author": "Axel Garnica Estrada",
